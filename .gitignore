@@ -1,5 +1,9 @@
 node_modules/
 dist/
 .cache-lsj/
+.cache-corpus/
+.cache-src/
 *.log
 .DS_Store
+.vercel
+.qa-tools/

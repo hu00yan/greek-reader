@@ -19,7 +19,8 @@ _TO_BETA = {
     "ο": "o", "π": "p", "ρ": "r", "σ": "s", "ς": "s", "τ": "t", "υ": "u",
     "φ": "f", "χ": "x", "ψ": "y", "ω": "w",
 }
-_FROM_BETA = {v: k for k, v in _TO_BETA.items()}
+_FROM_BETA = {v: k for k, v in _TO_BETA.items() if k != "ς"}
+_BETA_LETTERS = set(_FROM_BETA) | {"*"}
 
 _MARKS = {
     "\u0313": ")",   # smooth breathing
@@ -29,6 +30,8 @@ _MARKS = {
     "\u0342": "=",   # circumflex
     "\u0345": "|",   # iota subscript
     "\u0308": "+",   # diaeresis
+    "\u0304": "",    # macron: no Beta-Code equivalent -> drop silently
+    "\u0306": "",    # breve: likewise dropped
 }
 _FROM_MARKS = {v: k for k, v in _MARKS.items()}
 _MARK_ORDER = {"\u0313": 0, "\u0314": 0, "\u0301": 1, "\u0300": 1,
@@ -55,7 +58,8 @@ def to_beta(word: str) -> str:
             out.append(base)
             continue
         ms = "".join(_MARKS[m] for m in
-                     sorted(marks, key=lambda m: _MARK_ORDER.get(m, 9)))
+                     sorted(marks, key=lambda m: _MARK_ORDER.get(m, 9))
+                     if m in _MARKS)
         if base != lower:                       # capital
             out.append("*" + ms + _TO_BETA[lower])
         else:
@@ -83,7 +87,16 @@ def from_beta(code: str) -> str:
             i += 1
             continue
         if ch in _FROM_BETA:
-            out.append(_FROM_BETA[ch])
+            g = _FROM_BETA[ch]
+            if ch == "s" and (i + 1 >= len(code)
+                              or code[i + 1] not in _BETA_LETTERS):
+                g = "ς"                # sigma is word-final here
+            out.append(g)
+            i += 1
+            continue
+        if ch == "j":                      # TLG final-sigma variant
+            out.append("ς" if i + 1 >= len(code)
+                       or code[i + 1] not in _BETA_LETTERS else "σ")
             i += 1
             continue
         if ch in _FROM_MARKS and out:
@@ -123,14 +136,34 @@ if __name__ == "__main__":
         ("ἐστί", "e)sti/"),
         ("προσέφης", "prose/fhs"),
         ("ᾧ", "w(=|"),
-        ("Ξέρξης", "*ce/rchsjj"),  # placeholder, checked loosely below
+        ("Ξέρξης", "*ce/rchs"),
+        # macron/breve tolerance (U+0304 / U+0306): dropped, no exception
+        ("ᾱ", "a"),
+        ("ᾰ", "a"),
+        ("λῡ́ω", "lu/w"),          # macron dropped, acute kept
+        ("Χρῑστός", "*xristo/s"),
+        ("Οὐδείς", "*ou)dei/s"),   # capitalised diphthong
     ]
     ok = True
-    for uni, expected in cases[:-1]:
+    for uni, expected in cases:
         got = to_beta(uni)
         good = got == expected
         ok &= good
         print(f"{'OK ' if good else 'FAIL'} {uni!r:16} -> {got!r:14} (want {expected!r})")
+
+    print("\n== from_beta sigma regressions ==")
+    fb_cases = [
+        ("lo/gos", "λόγος"),
+        ("prose/fhs", "προσέφης"),
+        ("qa/natos", "θάνατος"),
+        ("qa/natoj", "θάνατος"),   # TLG final-sigma variant
+        ("e)sti/", "ἐστί"),        # internal s stays sigma
+    ]
+    for code, want in fb_cases:
+        got = from_beta(code)
+        good = got == want
+        ok &= good
+        print(f"{'OK ' if good else 'FAIL'} {code!r:12} -> {got!r} (want {want!r})")
 
     print("\n== empirical check vs cruncher ==")
     words = ["λόγου", "ἄνθρωπος", "Μῆνιν", "Ἀτρεΐδης", "Οὐδείς", "Θέτις",

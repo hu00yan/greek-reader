@@ -75,10 +75,12 @@ def parse_lines(path: str) -> list[dict]:
 def run_cruncher(beta_forms: list[str]) -> dict[str, list[dict]]:
     """Batch all forms through cruncher; return {beta_form: [parse, ...]}.
 
-    Cruncher echoes each input line then prints its <NL> records.  Echoes
-    can be dropped or mangled, so instead of trusting a strict 1:1 rhythm
-    we keep a pointer to the NEXT expected echo and search a small window
-    ahead for it; an unmatched word simply gets zero parses.
+    Sync strategy: the cruncher echoes each input line before printing its
+    <NL> records (some forms get no output at all).  Instead of assuming a
+    strict rhythm, every stdout line that exactly equals a still-pending
+    input form becomes the "current" form; record lines attach to it.
+    Record lines always start with '<NL>' so they can never collide with
+    an echo.  Unmatched, record-free lines (mangled echoes) are ignored.
     """
     unique = list(dict.fromkeys(beta_forms))
     buckets: dict[str, list[dict]] = {f: [] for f in unique}
@@ -88,35 +90,21 @@ def run_cruncher(beta_forms: list[str]) -> dict[str, list[dict]]:
         input="\n".join(unique) + "\n",
         capture_output=True, text=True, env=env,
     )
-    ptr = -1
-    WINDOW = 3
+    pending = set(unique)
+    current = None
     for raw in proc.stdout.splitlines():
         line = raw.strip()
         if not line or line.startswith(":"):
             continue  # debug chatter e.g. ":longtime"
-        nxt = ptr + 1
-        if nxt < len(unique) and line == unique[nxt]:
-            ptr = nxt          # clean echo
+        if line in pending:
+            current = line
+            pending.discard(line)
             continue
-        # lost sync? look a few lines-worth ahead for the expected echo
-        if nxt < len(unique):
-            hit = -1
-            for off in range(1, WINDOW + 1):
-                j = nxt + off
-                if j < len(unique) and line == unique[j]:
-                    hit = j
-                    break
-            if hit >= 0:
-                ptr = hit      # skipped some unechoed inputs -> no parses
-                continue
-            if any(line.startswith(u) or u.startswith(line)
-                   for u in unique[nxt:nxt + WINDOW]):
-                continue       # mangled partial echo; treat as no parses
-        if ptr >= 0:
+        if current is not None:
             for rec in re.findall(r"<NL>(.*?)</NL>", line):
                 parsed = parse_record(rec)
                 if parsed:
-                    buckets[unique[ptr]].append(parsed)
+                    buckets[current].append(parsed)
     unparsed = sum(1 for f in unique if not buckets[f])
     print(f"cruncher: {len(unique)} unique forms, "
           f"{len(unique) - unparsed} analysed, {unparsed} unparsed")
