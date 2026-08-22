@@ -13,6 +13,7 @@ import {
 import { openTranslation } from "./translation";
 import { lexiconButton } from "./lexicon";
 import { initPaste } from "./paste";
+import { renderAbout, aboutLink } from "./about";
 import { initLLM } from "./llm-panel";
 import { renderHome } from "./home";
 
@@ -26,12 +27,14 @@ const el = (tag: string, cls?: string, text?: string): HTMLElement => {
 };
 
 const TLG_RE = /^tlg\d{4}$/;
-const BATCH_UNITS = 120; // units rendered per "Load more" step
+const BATCH_UNITS = 120; // units fetched per part top-up (render pages are smaller)
+const PAGE_SIZE = 30; // units rendered per page — keeps scroll manageable
 
 function go(hash: string): void {
   hidePanel();
   const route = hash.replace(/^#\/?/, "");
   if (route === "paste") return initPaste(app, () => (location.hash = ""));
+  if (route === "about") return renderAbout(app);
   const m = route.match(/^([^/]+)\/([^/]+)$/);
   if (m) {
     if (TLG_RE.test(m[1])) return void openReader(m[1], m[2]);
@@ -91,7 +94,7 @@ interface ReaderState {
   renderedUnits: number;
 }
 
-const PAGE_UNITS = BATCH_UNITS;
+const PAGE_UNITS = PAGE_SIZE;
 
 function totalPages(state: ReaderState): number {
   return Math.max(1, Math.ceil(state.work.unitCount / PAGE_UNITS));

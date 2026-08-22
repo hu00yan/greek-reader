@@ -5,6 +5,7 @@
 import { loadCatalog, stripAccents, type CatalogAuthor } from "./api";
 import { lexiconButton } from "./lexicon";
 import { themeControl } from "./theme";
+import { aboutLink } from "./about";
 
 const el = (tag: string, cls?: string, text?: string): HTMLElement => {
   const e = document.createElement(tag);
@@ -72,6 +73,11 @@ export function renderHome(app: HTMLElement): void {
   );
   cards.appendChild(pasteCard);
   app.appendChild(cards);
+
+  // footer: about / sources & licenses
+  const footer = el("p", "about-footer");
+  footer.appendChild(aboutLink());
+  app.appendChild(footer);
 
   // ---- catalog ----
   let catalogAuthors: CatalogAuthor[] = [];

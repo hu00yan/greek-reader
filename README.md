@@ -68,7 +68,19 @@ public/data/
   texts/<tlg>/<work>-partNN.json  # {id, author, title, kind, units:[{ref, words}]}
   morph/<letter>.json             # {strippedForm: [{l: lemma, p: pos, f: features, x: extras}]}
   gloss/<letter>.json             # {strippedLemma: {u: headword, g: LSJ gloss}}
+  trans/<workId>.json             # {workId, translator, year, license, source,
+                                  #  alignment?, units:[{ref, text}]}
 ```
+
+`trans/` holds aligned public-domain **English translations** (431 works).
+Greek `units[].ref` strings are mirrored exactly; a Greek unit without an
+entry in `units` renders without English. Prose alignments re-split section
+text proportionally where chunk counts differ — those files carry
+`"alignment":"loose"`. Works whose id is ambiguous in the catalog (e.g. two
+`apology`s) use `<tlg>--<id>.json` and say so in
+`catalog.json → work.translation.file`. The build is resume-safe:
+`python3 pipeline/build_translations.py` (downloads cached under
+`.cache-trans/`, gitignored).
 
 Routes are catalog-driven: `#/<tlg>/<workId>` loads the work's part files
 sequentially ("Load more" pagination). Old `#/iliad/1`-style links redirect
@@ -138,6 +150,26 @@ distributed under the corresponding ShareAlike terms.
 
 - **Greek text — Philo, Nicander, Epicurus, pseudo-Menander** — also from
   OpenGreekAndLatin/First1KGreek (**CC BY-SA 4.0**).
+
+### English translations (`public/data/trans/`, all public domain)
+
+- **Classical works (354)** — paired English editions from
+  [PerseusDL/canonical-greekLit](https://github.com/PerseusDL/canonical-greekLit):
+  A. T. Murray's Homer (*Iliad* 1924, *Odyssey* 1919), Godley's Herodotus
+  (1920), Crawley's Thucydides (1914), Jebb's Sophocles, Smyth's Aeschylus,
+  Fowler's Plato, and the rest of the Perseus translation corpus. Only
+  editions with imprint years ≤ 1929 are ingested; the TEI header supplies
+  translator and year, recorded per work in `catalog.json`.
+- **New Testament (27 books)** — King James Version, 1769 standard text,
+  via the `aruljohn/Bible-kjv` JSON mirror.
+- **Septuagint (50+ books)** — Sir Lancelot C. L. Brenton's translation
+  (Samuel Bagster, London: 1844; Apocrypha incl. 1 Esdras, Wisdom, Sirach,
+  Maccabees, Daniel/Theodotion additions 1851), via eBible.org's USFX
+  edition of the public-domain text.
+- Where a prose translation's section chunking differs from the Greek, text
+  is re-split proportionally and the file is marked `"alignment":"loose"`;
+  line-level translations distributed from range-anchored prose (e.g.
+  Murray's Homer) are likewise marked loose.
 
 ## Acknowledgments
 

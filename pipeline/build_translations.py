@@ -542,6 +542,18 @@ def stage_parse() -> None:
             refs = {u["ref"] for u in units}
             hits = sum(1 for r in refs if r in verses)
             cov = hits / max(len(refs), 1)
+            if cov < 0.5 and len(codes) == 1:
+                # Greek sometimes drops the chapter on single-chapter books
+                # (Epistle of Jeremiah: refs "1".."72" vs LJE "1.1".."1.72")
+                bk = brenton_books.get(codes[0], {})
+                if bk and max(bk) == 1:
+                    alt = {str(ve): t for vs in bk.values()
+                           for ve, t in vs.items()}
+                    h2 = sum(1 for r in refs if r in alt)
+                    if h2 > hits:
+                        verses, cov = alt, h2 / max(len(refs), 1)
+                        log(f"    ~ {wid}: single-chapter remap "
+                            f"cov {cov:.0%}")
             entry = {"src": "brenton", "translator": "L. C. L. Brenton",
                      "year": year, "cov": cov, "verses": verses}
         else:
@@ -627,6 +639,7 @@ def stage_align_emit() -> None:
     dups = {i for i, n in id_count.items() if n > 1}
     stats = {"works": 0, "verse_units": 0, "prose_exact": 0,
              "prose_prop": 0, "missing": 0, "loose": 0}
+    emitted: list[str] = []
     plain_fallback: dict[str, tuple[str, dict]] = {}
 
     for key, ent in sorted(summary.items()):
@@ -737,6 +750,7 @@ def stage_align_emit() -> None:
         json.dump(doc, open(os.path.join(TRANS, f"{fname}.json"), "w",
                             encoding="utf-8"),
                   ensure_ascii=False, separators=(",", ":"))
+        emitted.append(key)
         # naive trans/<id>.json consumers: deterministic pick for dup ids
         prev = plain_fallback.get(ent["id"])
         if prev is None or ent["tlg"] < prev[0]:
@@ -750,6 +764,9 @@ def stage_align_emit() -> None:
     with open(os.path.join(PARSED, "_dups.json"), "w",
               encoding="utf-8") as fh:
         json.dump(sorted(dups), fh)
+    with open(os.path.join(PARSED, "_emitted.json"), "w",
+              encoding="utf-8") as fh:
+        json.dump(emitted, fh)
     json.dump(stats, open(os.path.join(PARSED, "_stats.json"), "w",
                           encoding="utf-8"), indent=1)
     log(f"[align/emit] {stats}")
@@ -762,6 +779,8 @@ def stage_align_emit() -> None:
 def stage_catalog() -> None:
     summary = json.load(open(os.path.join(PARSED, "_summary.json"),
                              encoding="utf-8"))
+    emitted = set(json.load(open(os.path.join(PARSED, "_emitted.json"),
+                                 encoding="utf-8")))
     dups = set(json.load(open(os.path.join(PARSED, "_dups.json"),
                               encoding="utf-8")))
     cat = json.load(open(CATALOG, encoding="utf-8"))
@@ -769,9 +788,10 @@ def stage_catalog() -> None:
     for a in cat["authors"]:
         for wk in a["works"]:
             wk.pop("translation", None)     # drop stale fields from reruns
-            ent = summary.get(f"{a['tlg']}--{wk['id']}")
-            if not ent:
-                continue
+            key = f"{a['tlg']}--{wk['id']}"
+            ent = summary.get(key)
+            if not ent or key not in emitted:
+                continue                    # no source, or empty emission
             tr = {"translator": ent["translator"], "year": ent["year"],
                   "license": "Public domain"}
             if wk["id"] in dups:      # disambiguated trans/ filename
