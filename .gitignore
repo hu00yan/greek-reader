@@ -7,3 +7,6 @@ dist/
 .DS_Store
 .vercel
 .qa-tools/
+qa-report/
+DEPLOY_URL.txt
+.cache-trans/

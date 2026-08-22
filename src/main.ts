@@ -7,10 +7,14 @@ import {
   type CatalogAuthor, type CatalogWork, type Unit,
 } from "./api";
 import {
-  mergeCtx, prepare, renderControls, renderUnits, hidePanel,
-  type RenderCtx,
+  genreFor, hidePanel, mergeCtx, prepare, renderControls, renderUnits,
+  tallyLemmas, type RenderCtx,
 } from "./render";
+import { openTranslation } from "./translation";
+import { lexiconButton } from "./lexicon";
 import { initPaste } from "./paste";
+import { initLLM } from "./llm-panel";
+import { renderHome } from "./home";
 
 const app = document.getElementById("app") as HTMLElement;
 
@@ -33,68 +37,13 @@ function go(hash: string): void {
     if (TLG_RE.test(m[1])) return void openReader(m[1], m[2]);
     return void redirectLegacy(m[1], m[2]);
   }
-  void renderHome();
+  void goHome();
 }
 
 /* ---------------- home ---------------- */
 
-async function renderHome(): Promise<void> {
-  app.replaceChildren();
-  app.appendChild(el("h1", undefined, "Greek Reader"));
-  app.appendChild(
-    el("p", "subtitle",
-      "An interlinear reading environment for Ancient Greek — Homer to " +
-      "Plutarch, the New Testament and the Septuagint: morphology by " +
-      "Morpheus, glosses from LSJ, all static JSON."),
-  );
-
-  const cards = el("div", "cards");
-  app.appendChild(cards);
-
-  const pasteCard = el("a", "card") as HTMLAnchorElement;
-  pasteCard.href = "#/paste";
-  pasteCard.appendChild(el("div", "title", "Paste & Parse"));
-  pasteCard.appendChild(
-    el("div", "meta", "Analyse any Greek text you paste, on the fly."),
-  );
-  cards.appendChild(pasteCard);
-
-  let catalog;
-  try {
-    catalog = await loadCatalog();
-  } catch (e) {
-    app.appendChild(el("p", "unparsed-note",
-      `Could not load catalog.json: ${(e as Error).message}`));
-    return;
-  }
-
-  const authors = [...catalog.authors].sort((a, b) =>
-    a.name.localeCompare(b.name));
-  for (const author of authors) {
-    const block = el("section", "author-block");
-    const head = el("h2", undefined, author.name);
-    head.id = author.tlg;
-    block.appendChild(head);
-    const list = el("div", "work-list");
-    for (const w of sortedWorks(author)) {
-      const link = el("a", "work-link") as HTMLAnchorElement;
-      link.href = `#/${author.tlg}/${w.id}`;
-      const t = el("span", "work-title", w.title);
-      link.appendChild(t);
-      link.appendChild(el("span", "work-meta",
-        `${w.unitCount.toLocaleString()} units`));
-      link.title = w.license;
-      list.appendChild(link);
-    }
-    block.appendChild(list);
-    app.appendChild(block);
-  }
-}
-
-/** Natural sort so Iliad book parts / oration numbers read in order. */
-function sortedWorks(author: CatalogAuthor): CatalogWork[] {
-  return [...author.works].sort((a, b) =>
-    a.title.localeCompare(b.title, undefined, { numeric: true }));
+function goHome(): void {
+  renderHome(app);
 }
 
 async function redirectLegacy(first: string, second: string): Promise<void> {
@@ -118,6 +67,9 @@ async function redirectLegacy(first: string, second: string): Promise<void> {
 
 /* ---------------- reader ---------------- */
 
+interface PageInfo {
+  rows: number; // DOM rows appended for this page (1 per unit)
+}
 interface ReaderState {
   work: CatalogWork;
   author: CatalogAuthor;
@@ -126,12 +78,40 @@ interface ReaderState {
   kind: "verse" | "prose";
   ctx: RenderCtx;
   body: HTMLElement;
-  moreBtn: HTMLButtonElement;
-  status: HTMLElement;
+  pager: {
+    root: HTMLElement;
+    info: HTMLElement;
+    prev: HTMLButtonElement;
+    next: HTMLButtonElement;
+    jump: HTMLInputElement;
+  };
+  pages: PageInfo[];     // rendered pages, in order
+  busy: boolean;
+  atEnd: boolean;
   renderedUnits: number;
 }
 
+const PAGE_UNITS = BATCH_UNITS;
+
+function totalPages(state: ReaderState): number {
+  return Math.max(1, Math.ceil(state.work.unitCount / PAGE_UNITS));
+}
+
+function updatePager(state: ReaderState): void {
+  const p = state.pages.length;
+  const start = p ? state.renderedUnits - state.pages[p - 1].rows + 1 : 0;
+  const end = state.renderedUnits;
+  const total = state.work.unitCount;
+  state.pager.info.textContent =
+    `Units ${start.toLocaleString()}–${end.toLocaleString()} of ` +
+    `${total.toLocaleString()} · Page ${p} of ${totalPages(state)}`;
+  state.pager.prev.disabled = state.busy || p <= 1;
+  state.pager.next.disabled =
+    state.busy || state.atEnd || end >= total;
+}
+
 async function openReader(tlg: string, workId: string): Promise<void> {
+  allUnits = [];
   app.replaceChildren();
   app.appendChild(el("p", "crumbs", "Loading…"));
 
@@ -152,69 +132,151 @@ async function openReader(tlg: string, workId: string): Promise<void> {
     return;
   }
 
-  app.replaceChildren(renderControls(`${author.name}, ${work.title}`,
-    () => (location.hash = "")).root);
+  const controls = renderControls(`${author.name}, ${work.title}`,
+    () => (location.hash = ""));
+  app.replaceChildren(controls.root);
+
+  // translation toggle only when the catalog ships translations
+  if ((work as { translation?: { files?: string[] } }).translation
+    ?.files?.length) {
+    let trView: Awaited<ReturnType<typeof openTranslation>> = null;
+    const trBtn = el("button", undefined, "English ▭") as HTMLButtonElement;
+    trBtn.type = "button";
+    trBtn.setAttribute("aria-pressed", "false");
+    trBtn.addEventListener("click", async () => {
+      if (!trView) {
+        trView = await openTranslation(work!, () => allUnits);
+        if (!trView) return;
+      }
+      trView.toggle();
+      trBtn.setAttribute("aria-pressed", String(trView.isOpen()));
+    });
+    controls.root.appendChild(trBtn);
+  }
 
   const body = el("div");
   app.appendChild(body);
+
+  // pager footer replaces the bare Load-more button
+  const info = el("span", "pager-info");
+  const prev = el("button", undefined, "← Prev") as HTMLButtonElement;
+  const next = el("button", undefined, "Next →") as HTMLButtonElement;
+  prev.type = next.type = "button";
+  const jump = el("input") as HTMLInputElement;
+  jump.type = "number";
+  jump.min = "1";
+  jump.setAttribute("aria-label", "Jump to page");
+  const pagerRoot = el("div", "pager");
+  pagerRoot.appendChild(info);
+  pagerRoot.appendChild(prev);
+  pagerRoot.appendChild(next);
+  pagerRoot.appendChild(jump);
 
   const state: ReaderState = {
     work, author,
     queue: [...work.files],
     buffer: [],
     kind: "verse",
-    ctx: { morph: new Map(), gloss: new Map() },
+    ctx: { morph: new Map(), gloss: new Map(), genre: genreFor(author.tlg) },
     body,
-    moreBtn: el("button", "load-more", "Load more") as HTMLButtonElement,
-    status: el("p", "reader-status"),
+    pager: { root: pagerRoot, info, prev, next, jump },
+    pages: [],
+    busy: false,
+    atEnd: false,
     renderedUnits: 0,
   };
-  state.moreBtn.addEventListener("click", () => void loadMore(state));
-  state.moreBtn.hidden = true;
-  app.appendChild(state.status);
-  app.appendChild(state.moreBtn);
+  prev.addEventListener("click", () => void turnPage(state, -1));
+  next.addEventListener("click", () => void turnPage(state, +1));
+  jump.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    const target = Math.min(totalPages(state),
+      Math.max(1, parseInt(jump.value || "1", 10) || 1));
+    jump.value = String(target);
+    void turnPage(state, target - state.pages.length);
+  });
 
-  await loadMore(state);
+  await loadNextPage(state);
+  app.appendChild(pagerRoot);
+  updatePager(state);
 }
 
-async function loadMore(state: ReaderState): Promise<void> {
-  const btn = state.moreBtn;
-  btn.disabled = true;
-  state.status.textContent = "Loading…";
+/** All Greek units currently on screen (translation alignment source). */
+let allUnits: Unit[] = [];
+
+/** Render exactly one more page (fetching as needed). */
+async function loadNextPage(state: ReaderState): Promise<void> {
   try {
-    // top up the buffer from part files until we have a full batch
-    while (state.buffer.length < BATCH_UNITS && state.queue.length) {
+    while (state.buffer.length < PAGE_UNITS && state.queue.length) {
       const part = await loadPart(state.queue.shift()!);
       state.kind = state.kind === "prose" ? "prose"
         : part.kind === "prose" ? "prose" : state.kind;
       state.buffer.push(...part.units);
     }
     if (!state.buffer.length) {
-      state.status.textContent =
-        `${state.renderedUnits.toLocaleString()} units · end of text`;
-      btn.hidden = true;
+      state.atEnd = true;
       return;
     }
-
-    const batch = state.buffer.splice(0, BATCH_UNITS);
+    const batch = state.buffer.splice(0, PAGE_UNITS);
     const freshCtx = await prepare(batch);
     mergeCtx(state.ctx, freshCtx.morph, freshCtx.gloss);
-    renderUnits(state.body, batch, state.ctx, state.kind);
+    tallyLemmas(state.ctx, batch); // grow the work-view frequency signal
+    renderUnits(state.body, batch, state.ctx, state.kind,
+      state.renderedUnits);
+    allUnits.push(...batch);
+    state.pages.push({ rows: batch.length });
     state.renderedUnits += batch.length;
-
-    const total = state.work.unitCount;
-    state.status.textContent =
-      `${Math.min(state.renderedUnits, total).toLocaleString()} / ` +
-      `${total.toLocaleString()} units`;
-    btn.hidden = false;
-    btn.textContent = `Load more (${state.work.files.length - state.queue.length}` +
-      `/${state.work.files.length} files loaded)`;
   } catch (e) {
-    state.status.textContent = `Load failed: ${(e as Error).message}`;
+    state.pager.info.textContent = `Load failed: ${(e as Error).message}`;
+    state.atEnd = true;
+  }
+}
+
+/** Remove the last rendered page from screen and memory. */
+function popPage(state: ReaderState): void {
+  const last = state.pages.pop();
+  if (!last) return;
+  for (let i = 0; i < last.rows; i++) {
+    state.body.lastElementChild?.remove();
+  }
+  allUnits.length -= last.rows;
+  state.renderedUnits -= last.rows;
+}
+
+/** Page turning: delta ±1 steps or a positive jump target. */
+async function turnPage(
+  state: ReaderState,
+  delta: number,
+): Promise<void> {
+  if (state.busy || !delta) return;
+  const cur = state.pages.length;
+  const target = Math.max(1,
+    Math.min(totalPages(state), cur + delta));
+  if (target === cur) return;
+  state.busy = true;
+  updatePager(state);
+  try {
+    if (delta > 0) {
+      while (state.pages.length < target && !state.atEnd) {
+        await loadNextPage(state);
+      }
+    } else {
+      while (state.pages.length > target && state.pages.length > 1) {
+        popPage(state);
+      }
+    }
+    window.scrollTo({ top: 0 });
   } finally {
-    btn.disabled = false;
+    state.busy = false;
+    updatePager(state);
   }
 }
 
 window.addEventListener("hashchange", () => go(location.hash));
+initLLM(); // gear button + AI assist hooks (see llm-panel.ts)
+// floating Lexicon trigger: guarantees the drawer on every route,
+// including paste (whose page module is not owned by the UI round)
+const lexFab = lexiconButton("Lexicon");
+lexFab.className = "lex-fab";
+document.body.appendChild(lexFab);
 go(location.hash);
