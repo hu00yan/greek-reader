@@ -10,3 +10,4 @@ dist/
 qa-report/
 DEPLOY_URL.txt
 .cache-trans/
+.tmp-review

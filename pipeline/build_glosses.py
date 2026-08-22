@@ -34,7 +34,7 @@ SENSE1_RE = re.compile(r'<sense [^>]*level="1"[^>]*>(.*?)</sense>', re.DOTALL)
 SENSE_ANY_RE = re.compile(r'<sense [^>]*>(.*?)</sense>', re.DOTALL)
 TAG_RE = re.compile(r"<[^>]+>")
 GREEK_RE = re.compile(r"[α-ωάέήίόύώϊϋΐΰἀ-ῼ]")
-ALLOWED_KEY_RE = re.compile(r"[*(a-z)\=/\\+|]+")
+ALLOWED_KEY_RE = re.compile(r"[*(a-z)\=/\\+|_^]+")
 MIN_FILE_BYTES = 1024               # smaller => error page / empty
 
 

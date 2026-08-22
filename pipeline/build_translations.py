@@ -794,9 +794,13 @@ def stage_catalog() -> None:
             if not ent or key not in emitted:
                 continue                    # no source, or empty emission
             tr = {"translator": ent["translator"], "year": ent["year"],
-                  "license": "Public domain"}
-            if wk["id"] in dups:      # disambiguated trans/ filename
+                  "license": "Public domain",
+                  "files": [f"trans/{a['tlg']}--{wk['id']}.json" if wk["id"] in dups else f"trans/{wk['id']}.json"]}
+            # keep legacy singular for backwards-compat consumers
+            if wk["id"] in dups:
                 tr["file"] = f"trans/{a['tlg']}--{wk['id']}.json"
+            else:
+                tr["file"] = f"trans/{wk['id']}.json"
             wk["translation"] = tr
             patched += 1
     with open(CATALOG, "w", encoding="utf-8") as fh:

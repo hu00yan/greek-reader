@@ -72,6 +72,10 @@ def from_beta(code: str) -> str:
     i = 0
     while i < len(code):
         ch = code[i]
+        # LSJ length markers: breve ^ and macron _ are purely metrical — drop
+        if ch in "^_":
+            i += 1
+            continue
         if ch == "*":
             j = i + 1
             marks = []
@@ -104,9 +108,32 @@ def from_beta(code: str) -> str:
             out[-1] = unicodedata.normalize("NFC", prev + _FROM_MARKS[ch])
             i += 1
             continue
+        if ch == "-":
+            # keep hyphen for now — post-process handles stripping/collapse
+            out.append(ch)
+            i += 1
+            continue
         out.append(ch)
         i += 1
-    return unicodedata.normalize("NFC", "".join(out))
+    raw = unicodedata.normalize("NFC", "".join(out))
+    # --- hyphen / sigma hygiene (fix morph ς-πλ leak) ---
+    # strip leading/trailing hyphens
+    raw = raw.strip("-")
+    # hyphenated suffixes (e.g. Ταρκύνιος-πλ) are morphological tags, not lemma part
+    if "-" in raw:
+        # keep base before first hyphen
+        raw = raw.split("-")[0].strip("-")
+    # collapse any lingering ς- artifacts (in case hyphen handling missed)
+    raw = raw.replace("ς-", "σ")
+    # ensure ς appears only as final character (medial ς → σ)
+    if "ς" in raw:
+        if raw.endswith("ς"):
+            raw = raw[:-1].replace("ς", "σ") + "ς"
+        else:
+            raw = raw.replace("ς", "σ")
+    # final hyphen strip
+    raw = raw.strip("-")
+    return raw
 
 
 def strip_accents(word: str) -> str:
