@@ -1,0 +1,205 @@
+:root {
+  --greek-size: 1.35rem;
+  --ui-size: 1rem;
+  --ink: #1f2430;
+  --muted: #8a8f98;
+  --faint: #b9bec7;
+  --accent: #2456a6;
+  --card-bg: #f6f4ee;
+  --panel-bg: #fbfaf6;
+  --line: #e3e0d8;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: #fdfcfa;
+  color: var(--ink);
+  font-family: 'Gentium Plus', 'GFS Didot', Georgia, serif;
+  font-size: var(--ui-size);
+}
+
+#app {
+  max-width: 52rem;
+  margin: 0 auto;
+  padding: 1.5rem 1.25rem 4rem;
+}
+
+h1 {
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  margin: 0 0 0.25rem;
+}
+
+.subtitle { color: var(--muted); margin: 0 0 2rem; }
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* ---- home cards ---- */
+.cards { display: grid; gap: 1rem; margin-top: 1.5rem; }
+
+.card {
+  display: block;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 1rem 1.25rem;
+  background: var(--panel-bg);
+  color: inherit;
+}
+.card:hover {
+  border-color: var(--accent);
+  text-decoration: none;
+  background: #fff;
+}
+.card .title { font-size: 1.15rem; font-weight: 600; }
+.card .meta { color: var(--muted); font-size: 0.9rem; margin-top: 0.25rem; }
+
+/* ---- controls bar ---- */
+.controls {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0;
+  margin-bottom: 1rem;
+  background: rgba(253, 252, 250, 0.95);
+  border-bottom: 1px solid var(--line);
+}
+.controls .spacer { flex: 1; }
+.controls button {
+  font: inherit;
+  font-size: 0.9rem;
+  padding: 0.25rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--ink);
+  cursor: pointer;
+}
+.controls button:hover { border-color: var(--accent); color: var(--accent); }
+.controls button[aria-pressed="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.crumbs { color: var(--muted); font-size: 0.9rem; }
+
+/* ---- interlinear reader ---- */
+.line { margin-bottom: 1.4rem; }
+
+.greek-line {
+  font-size: var(--greek-size);
+  line-height: 1.65;
+}
+
+.w { cursor: pointer; border-radius: 3px; }
+.w:hover { background: #eef2fa; }
+.w.active { background: #dfe8f8; }
+
+.parse-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  column-gap: 1.1rem;
+  row-gap: 0.4rem;
+  border-top: 1px dotted var(--line);
+  padding: 0.35rem 0 0;
+  font-size: calc(var(--ui-size) * 0.82);
+  line-height: 1.45;
+}
+
+.pcol { min-width: 4.5rem; max-width: 12rem; }
+
+.pcard { margin-bottom: 0.35rem; }
+.pcard:last-child { margin-bottom: 0; }
+
+.lemma {
+  font-style: italic;
+  font-weight: bold;
+  color: var(--ink);
+}
+.feats {
+  color: #55617a;
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 0.72rem;
+}
+.gloss { color: var(--muted); }
+.noparse { color: var(--faint); }
+
+body.hide-gloss .gloss { display: none; }
+
+/* ---- side panel ---- */
+.panel-backdrop { display: none; }
+
+.side-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  height: 100vh;
+  width: min(22rem, 92vw);
+  overflow-y: auto;
+  background: var(--panel-bg);
+  border-left: 1px solid var(--line);
+  box-shadow: -8px 0 24px rgba(31, 36, 48, 0.08);
+  padding: 1.25rem;
+  z-index: 20;
+}
+.side-panel.hidden { display: none; }
+.side-panel h2 {
+  margin: 0 0 0.25rem;
+  font-size: 1.3rem;
+  font-style: italic;
+}
+.side-panel .word-form { color: var(--muted); margin-bottom: 1rem; }
+.side-panel .close-btn {
+  float: right;
+  font: inherit;
+  border: 1px solid var(--line);
+  background: #fff;
+  border-radius: 999px;
+  width: 1.8rem;
+  height: 1.8rem;
+  cursor: pointer;
+}
+.entry {
+  border-top: 1px solid var(--line);
+  padding: 0.75rem 0;
+}
+.entry:first-of-type { border-top: none; }
+.entry .feats { display: block; margin: 0.2rem 0; }
+.entry .dict-gloss { color: #444; }
+
+/* ---- paste page ---- */
+textarea {
+  width: 100%;
+  min-height: 8rem;
+  font: inherit;
+  font-size: var(--greek-size);
+  padding: 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  resize: vertical;
+}
+.primary {
+  font: inherit;
+  margin-top: 0.75rem;
+  padding: 0.45rem 1.4rem;
+  border: none;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+}
+.primary:hover { filter: brightness(1.1); }
+.unparsed-note { color: var(--muted); margin-top: 0.75rem; }
+
+@media (max-width: 40rem) {
+  :root { --greek-size: 1.2rem; }
+  .parse-row { column-gap: 0.8rem; }
+}
