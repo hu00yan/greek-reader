@@ -1,11 +1,6 @@
-// Shared interlinear rendering: Greek line + per-word parse cards,
-// controls bar, and the click-for-details side panel.
-import { loadGloss, loadMorph, stripAccents, type Gloss, type Parse } from "./api";
-
-export interface WordLine {
-  n: string;
-  words: string[];
-}
+// Shared interlinear rendering: Greek units (verse lines or prose chunks)
+// with per-word parse cards, controls bar, and the click-for-details panel.
+import { loadGloss, loadMorph, stripAccents, type Gloss, type Parse, type Unit } from "./api";
 
 type El = HTMLElement;
 const el = (tag: string, cls?: string, text?: string): El => {
@@ -18,11 +13,24 @@ const el = (tag: string, cls?: string, text?: string): El => {
 export interface RenderCtx {
   morph: Map<string, Parse[]>;
   gloss: Map<string, Gloss>;
+  /** Accent-stripped forms known to be unanalysable (paste live pass). */
+  unknown?: Set<string>;
 }
 
-/** Load every analysis + gloss needed for these lines. */
-export async function prepare(lines: WordLine[]): Promise<RenderCtx> {
-  const forms = lines.flatMap((l) => l.words);
+/** Merge freshly loaded shards into an accumulating context. */
+export function mergeCtx(
+  ctx: RenderCtx,
+  morph: Map<string, Parse[]>,
+  gloss: Map<string, Gloss>,
+): RenderCtx {
+  for (const [k, v] of morph) if (!ctx.morph.has(k)) ctx.morph.set(k, v);
+  for (const [k, v] of gloss) if (!ctx.gloss.has(k)) ctx.gloss.set(k, v);
+  return ctx;
+}
+
+/** Load every analysis + gloss needed for these units (shards cached). */
+export async function prepare(units: Unit[]): Promise<RenderCtx> {
+  const forms = units.flatMap((u) => u.words);
   const morph = await loadMorph(forms);
   const lemmas: string[] = [];
   for (const w of new Set(forms)) {
@@ -36,7 +44,12 @@ function parseCards(word: string, ctx: RenderCtx): El {
   const col = el("div", "pcol");
   const parses = ctx.morph.get(stripAccents(word));
   if (!parses || parses.length === 0) {
-    col.appendChild(el("span", "noparse", "—"));
+    if (ctx.unknown?.has(stripAccents(word))) {
+      // confirmed unknown after both index and live lookup
+      col.appendChild(el("div", "pcard pcard-unknown", "—"));
+    } else {
+      col.appendChild(el("span", "noparse", "—"));
+    }
     return col;
   }
   for (const p of parses.slice(0, 3)) col.appendChild(parseCard(p, ctx));
@@ -58,19 +71,39 @@ function parseCard(p: Parse, ctx: RenderCtx): El {
   return card;
 }
 
-/** Render interlinear lines into container. */
-export function renderLines(container: El, lines: WordLine[], ctx: RenderCtx): void {
-  for (const line of lines) {
-    const row = el("div", "line");
+/** Render interlinear units into container.
+ *  kind "verse": one row per unit — ref label, Greek line, cards beneath.
+ *  kind "prose": ref badge + flowing paragraph of words, cards beneath. */
+export function renderUnits(
+  container: El,
+  units: Unit[],
+  ctx: RenderCtx,
+  kind: "verse" | "prose" = "verse",
+): void {
+  for (const unit of units) {
+    const row = el("div", kind === "prose" ? "unit prose-unit" : "line");
+    if (kind === "prose") {
+      const head = el("div", "prose-head");
+      if (unit.ref) head.appendChild(el("span", "ref-badge", unit.ref));
+      row.appendChild(head);
+    }
     const greek = el("div", "greek-line");
     greek.setAttribute("lang", "grc");
     const parseRow = el("div", "parse-row");
 
-    line.words.forEach((w, i) => {
+    if (kind === "verse" && unit.ref) {
+      const refLabel = el("span", "ref-label", unit.ref);
+      refLabel.title = `ref ${unit.ref}`;
+      greek.appendChild(refLabel);
+    }
+
+    unit.words.forEach((w, i) => {
       const span = el("span", "w", w);
       span.addEventListener("click", () => openPanel(span, w, ctx));
       greek.appendChild(span);
-      if (i < line.words.length - 1) greek.appendChild(document.createTextNode(" "));
+      if (i < unit.words.length - 1) {
+        greek.appendChild(document.createTextNode(" "));
+      }
       parseRow.appendChild(parseCards(w, ctx));
     });
 
@@ -79,6 +112,9 @@ export function renderLines(container: El, lines: WordLine[], ctx: RenderCtx): v
     container.appendChild(row);
   }
 }
+
+/** Back-compat alias used by the paste page. */
+export const renderLines = renderUnits;
 
 /* ---------------- controls ---------------- */
 

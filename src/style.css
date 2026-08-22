@@ -199,6 +199,99 @@ textarea {
 .primary:hover { filter: brightness(1.1); }
 .unparsed-note { color: var(--muted); margin-top: 0.75rem; }
 
+/* ---- paste page additions ---- */
+.paste-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  flex-wrap: wrap;
+}
+.char-counter { color: var(--muted); font-size: 0.85rem; }
+.char-counter.over { color: #a03030; }
+.paste-progress { color: var(--muted); font-size: 0.9rem; }
+.live-badge {
+  display: inline-block;
+  border: 1px dashed #b08d3f;
+  background: #fdf6e4;
+  color: #7a5b16;
+  padding: 0.35rem 0.75rem;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  margin-top: 0.75rem;
+}
+.pcard.pcard-unknown {
+  display: inline-block;
+  border: 1px dashed var(--faint);
+  border-radius: 6px;
+  padding: 0.15rem 0.5rem;
+  color: var(--faint);
+}
+
+/* ---- catalog home ---- */
+.author-block { margin-top: 2rem; }
+.author-block h2 {
+  font-size: 1.05rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 0.3rem;
+  margin: 0 0 0.5rem;
+}
+.work-list { display: grid; gap: 0.15rem; }
+.work-link {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 1rem;
+  padding: 0.28rem 0.4rem;
+  border-radius: 6px;
+  color: inherit;
+}
+.work-link:hover { background: var(--card-bg); text-decoration: none; }
+.work-title { color: var(--accent); }
+.work-meta { color: var(--faint); font-size: 0.82rem; white-space: nowrap; }
+
+/* ---- reader pagination ---- */
+.reader-status { color: var(--muted); font-size: 0.85rem; margin: 1rem 0 0.5rem; }
+.load-more {
+  display: block;
+  margin: 0.75rem auto 2rem;
+  font: inherit;
+  padding: 0.45rem 1.4rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+  cursor: pointer;
+}
+.load-more:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.load-more:disabled { opacity: 0.55; cursor: default; }
+
+/* ---- prose units + refs ---- */
+.prose-unit .greek-line { line-height: 1.8; }
+.ref-label {
+  display: inline-block;
+  min-width: 3.2em;
+  margin-right: 0.6em;
+  color: var(--faint);
+  font-size: 0.72em;
+  font-family: ui-monospace, Menlo, monospace;
+  user-select: none;
+}
+.ref-badge {
+  display: inline-block;
+  margin-right: 0.6em;
+  padding: 0.05rem 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--card-bg);
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-family: ui-monospace, Menlo, monospace;
+  vertical-align: middle;
+  user-select: none;
+}
+
 @media (max-width: 40rem) {
   :root { --greek-size: 1.2rem; }
   .parse-row { column-gap: 0.8rem; }

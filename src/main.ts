@@ -1,7 +1,15 @@
-// Hash router: '' → home, '#/<work>/<book>' → reader, '#/paste' → paste.
+// Hash router: '' → home (catalog), '#/<tlg>/<workId>' → reader,
+// '#/paste' → paste & parse. Legacy '#/<workId>/<book>' routes redirect
+// best-effort onto catalog ids.
 import "./style.css";
-import { fetchJSON, type Work } from "./api";
-import { prepare, renderControls, renderLines, hidePanel, type RenderCtx } from "./render";
+import {
+  loadCatalog, loadPart,
+  type CatalogAuthor, type CatalogWork, type Unit,
+} from "./api";
+import {
+  mergeCtx, prepare, renderControls, renderUnits, hidePanel,
+  type RenderCtx,
+} from "./render";
 import { initPaste } from "./paste";
 
 const app = document.getElementById("app") as HTMLElement;
@@ -13,13 +21,19 @@ const el = (tag: string, cls?: string, text?: string): HTMLElement => {
   return e;
 };
 
+const TLG_RE = /^tlg\d{4}$/;
+const BATCH_UNITS = 120; // units rendered per "Load more" step
+
 function go(hash: string): void {
   hidePanel();
   const route = hash.replace(/^#\/?/, "");
-  if (route === "paste") return renderHomeChromeless(() => initPaste(app, () => location.hash = ""));
+  if (route === "paste") return initPaste(app, () => (location.hash = ""));
   const m = route.match(/^([^/]+)\/([^/]+)$/);
-  if (m) return void openReader(m[1], m[2]);
-  renderHome();
+  if (m) {
+    if (TLG_RE.test(m[1])) return void openReader(m[1], m[2]);
+    return void redirectLegacy(m[1], m[2]);
+  }
+  void renderHome();
 }
 
 /* ---------------- home ---------------- */
@@ -29,8 +43,9 @@ async function renderHome(): Promise<void> {
   app.appendChild(el("h1", undefined, "Greek Reader"));
   app.appendChild(
     el("p", "subtitle",
-      "An interlinear reading environment for Ancient Greek: morphology by " +
-      "Morpheus, glosses from LSJ — all static JSON, no backend."),
+      "An interlinear reading environment for Ancient Greek — Homer to " +
+      "Plutarch, the New Testament and the Septuagint: morphology by " +
+      "Morpheus, glosses from LSJ, all static JSON."),
   );
 
   const cards = el("div", "cards");
@@ -44,57 +59,161 @@ async function renderHome(): Promise<void> {
   );
   cards.appendChild(pasteCard);
 
+  let catalog;
   try {
-    const works = await fetchJSON<Work[]>("data/works.json");
-    for (const w of works) {
-      const card = el("a", "card") as HTMLAnchorElement;
-      card.href = `#/${w.id}/${w.n}`;
-      const t = el("div", "title");
-      t.textContent = `${w.author}, ${w.title} ${w.n}`;
-      card.appendChild(t);
-      card.appendChild(
-        el("div", "meta", `${w.lines.length} lines · click to read with interlinear glosses`),
-      );
-      cards.insertBefore(card, pasteCard);
-    }
+    catalog = await loadCatalog();
   } catch (e) {
-    const warn = el("p", "unparsed-note");
-    warn.textContent = `Could not load work list: ${(e as Error).message}`;
-    app.appendChild(warn);
+    app.appendChild(el("p", "unparsed-note",
+      `Could not load catalog.json: ${(e as Error).message}`));
+    return;
+  }
+
+  const authors = [...catalog.authors].sort((a, b) =>
+    a.name.localeCompare(b.name));
+  for (const author of authors) {
+    const block = el("section", "author-block");
+    const head = el("h2", undefined, author.name);
+    head.id = author.tlg;
+    block.appendChild(head);
+    const list = el("div", "work-list");
+    for (const w of sortedWorks(author)) {
+      const link = el("a", "work-link") as HTMLAnchorElement;
+      link.href = `#/${author.tlg}/${w.id}`;
+      const t = el("span", "work-title", w.title);
+      link.appendChild(t);
+      link.appendChild(el("span", "work-meta",
+        `${w.unitCount.toLocaleString()} units`));
+      link.title = w.license;
+      list.appendChild(link);
+    }
+    block.appendChild(list);
+    app.appendChild(block);
   }
 }
 
-function renderHomeChromeless(show: () => void): void {
-  show();
+/** Natural sort so Iliad book parts / oration numbers read in order. */
+function sortedWorks(author: CatalogAuthor): CatalogWork[] {
+  return [...author.works].sort((a, b) =>
+    a.title.localeCompare(b.title, undefined, { numeric: true }));
+}
+
+async function redirectLegacy(first: string, second: string): Promise<void> {
+  // e.g. '#/iliad/1' → '#/tlg0012/iliad'; book number is dropped.
+  try {
+    const catalog = await loadCatalog();
+    const want = first.toLowerCase();
+    for (const author of catalog.authors) {
+      const hit = author.works.find((w) => w.id.toLowerCase() === want);
+      if (hit) {
+        location.hash = `#/${author.tlg}/${hit.id}`;
+        return;
+      }
+    }
+  } catch {
+    /* fall through to home */
+  }
+  void second;
+  location.hash = "";
 }
 
 /* ---------------- reader ---------------- */
 
-async function openReader(workId: string, bookN: string): Promise<void> {
+interface ReaderState {
+  work: CatalogWork;
+  author: CatalogAuthor;
+  queue: string[];       // part file paths not yet fetched
+  buffer: Unit[];        // fetched but not yet rendered
+  kind: "verse" | "prose";
+  ctx: RenderCtx;
+  body: HTMLElement;
+  moreBtn: HTMLButtonElement;
+  status: HTMLElement;
+  renderedUnits: number;
+}
+
+async function openReader(tlg: string, workId: string): Promise<void> {
   app.replaceChildren();
-  app.appendChild(el("p", "crumbs", `Loading ${workId} ${bookN}…`));
-  let work: Work;
+  app.appendChild(el("p", "crumbs", "Loading…"));
+
+  let author: CatalogAuthor | undefined;
+  let work: CatalogWork | undefined;
   try {
-    work = await fetchJSON<Work>(`data/${workId}.${bookN}.json`);
+    const catalog = await loadCatalog();
+    author = catalog.authors.find((a) => a.tlg === tlg);
+    work = author?.works.find((w) => w.id === workId);
   } catch (e) {
-    app.replaceChildren(
-      el("p", "unparsed-note", `Failed to load: ${(e as Error).message}`),
-    );
+    app.replaceChildren(el("p", "unparsed-note",
+      `Failed to load catalog: ${(e as Error).message}`));
+    return;
+  }
+  if (!author || !work) {
+    app.replaceChildren(el("p", "unparsed-note",
+      `Unknown work ${tlg}/${workId}.`));
     return;
   }
 
-  app.replaceChildren(renderControls(
-    `${work.author}, ${work.title} ${work.n}`,
-    () => (location.hash = ""),
-  ).root);
+  app.replaceChildren(renderControls(`${author.name}, ${work.title}`,
+    () => (location.hash = "")).root);
 
   const body = el("div");
   app.appendChild(body);
 
-  const ctxPromise = prepare(work.lines);
-  // draw the bare text immediately, then attach parse columns
-  const ctx = await ctxPromise;
-  renderLines(body, work.lines, ctx);
+  const state: ReaderState = {
+    work, author,
+    queue: [...work.files],
+    buffer: [],
+    kind: "verse",
+    ctx: { morph: new Map(), gloss: new Map() },
+    body,
+    moreBtn: el("button", "load-more", "Load more") as HTMLButtonElement,
+    status: el("p", "reader-status"),
+    renderedUnits: 0,
+  };
+  state.moreBtn.addEventListener("click", () => void loadMore(state));
+  state.moreBtn.hidden = true;
+  app.appendChild(state.status);
+  app.appendChild(state.moreBtn);
+
+  await loadMore(state);
+}
+
+async function loadMore(state: ReaderState): Promise<void> {
+  const btn = state.moreBtn;
+  btn.disabled = true;
+  state.status.textContent = "Loading…";
+  try {
+    // top up the buffer from part files until we have a full batch
+    while (state.buffer.length < BATCH_UNITS && state.queue.length) {
+      const part = await loadPart(state.queue.shift()!);
+      state.kind = state.kind === "prose" ? "prose"
+        : part.kind === "prose" ? "prose" : state.kind;
+      state.buffer.push(...part.units);
+    }
+    if (!state.buffer.length) {
+      state.status.textContent =
+        `${state.renderedUnits.toLocaleString()} units · end of text`;
+      btn.hidden = true;
+      return;
+    }
+
+    const batch = state.buffer.splice(0, BATCH_UNITS);
+    const freshCtx = await prepare(batch);
+    mergeCtx(state.ctx, freshCtx.morph, freshCtx.gloss);
+    renderUnits(state.body, batch, state.ctx, state.kind);
+    state.renderedUnits += batch.length;
+
+    const total = state.work.unitCount;
+    state.status.textContent =
+      `${Math.min(state.renderedUnits, total).toLocaleString()} / ` +
+      `${total.toLocaleString()} units`;
+    btn.hidden = false;
+    btn.textContent = `Load more (${state.work.files.length - state.queue.length}` +
+      `/${state.work.files.length} files loaded)`;
+  } catch (e) {
+    state.status.textContent = `Load failed: ${(e as Error).message}`;
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 window.addEventListener("hashchange", () => go(location.hash));
