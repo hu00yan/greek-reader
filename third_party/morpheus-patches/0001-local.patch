@@ -1,0 +1,209 @@
+diff --git a/src/anal/makefile b/src/anal/makefile
+index 5d3ea8a..2ed5feb 100755
+--- a/src/anal/makefile
++++ b/src/anal/makefile
+@@ -2,7 +2,7 @@
+ LEXLIB = -lfl
+ 
+ INCLUDE=../includes
+-CFLAGS= -O2 -I${INCLUDE}
++CFLAGS= -O2 -std=gnu89 -I${INCLUDE} -Wno-error=implicit-function-declaration -Wno-error=implicit-int -Wno-error=return-mismatch -Wno-int-conversion -Wno-error=incompatible-function-pointer-types -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0
+ RM=rm
+ CC=cc
+ CC=gcc
+diff --git a/src/auto/makefile b/src/auto/makefile
+index c9debbb..4020ebe 100755
+--- a/src/auto/makefile
++++ b/src/auto/makefile
+@@ -4,7 +4,7 @@ INCLUDE=.
+ CC=cc
+ CC=gcc
+ #CFLAGS= -O -I${INCLUDE}   -g
+-CFLAGS= -O -I${INCLUDE}  
++CFLAGS= -O2 -std=gnu89 -I${INCLUDE} -Wno-error=implicit-function-declaration -Wno-error=implicit-int -Wno-error=return-mismatch -Wno-int-conversion -Wno-error=incompatible-function-pointer-types -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0
+ LINTFLAGS= -I${INCLUDE} -DDEBUG
+ LIBS=../curses/libcurses -ltermcap
+ LIB= gen.a
+diff --git a/src/gener/combconj.c b/src/gener/combconj.c
+index caaa719..09f61e0 100755
+--- a/src/gener/combconj.c
++++ b/src/gener/combconj.c
+@@ -156,7 +156,7 @@ char * preverb;
+ 		 */
+ 		
+ 		nextkey(keytmp,suffstr);
+-		strcpy(suffstr,suffstr+1);
++		memmove(suffstr,suffstr+1,Xstrlen(suffstr+1)+1);
+ 	}
+ 	if( * globalkeys ) {
+ 		char tmp[LONGSTRING];
+diff --git a/src/gener/conjsys.c b/src/gener/conjsys.c
+index 2204eb7..a4335dc 100755
+--- a/src/gener/conjsys.c
++++ b/src/gener/conjsys.c
+@@ -96,7 +96,7 @@ int conjmode;
+ 					linebuf[strlen(linebuf)-1] = 0;
+ 			strcpy(origline,linebuf);
+ 			nextkey(linebuf,stembuf);
+-			strcpy(stembuf,stembuf+4);
++			memmove(stembuf,stembuf+4,Xstrlen(stembuf+4)+1);
+ 			nextkey(linebuf,globalkeys);
+ 			/*
+ 			 * keys that are attached directly to the derivstr are inherited by
+diff --git a/src/gener/gensynform.c b/src/gener/gensynform.c
+index 8c1af4b..ebcd3f7 100755
+--- a/src/gener/gensynform.c
++++ b/src/gener/gensynform.c
+@@ -641,7 +641,7 @@ register char * s;
+ {
+ 	while(*s) {
+ 		if( *s == '-' ) {
+-			strcpy(s,s+1);
++			memmove(s,s+1,Xstrlen(s+1)+1);
+ 			continue;
+ 		}
+ 		s++;
+@@ -653,7 +653,7 @@ register char * s;
+ {
+ 	while(*s) {
+ 		if( *s == '!' ) {
+-			strcpy(s,s+1);
++			memmove(s,s+1,Xstrlen(s+1)+1);
+ 			continue;
+ 		}
+ 		s++;
+diff --git a/src/gener/makefile b/src/gener/makefile
+index 74f10b9..b5160aa 100755
+--- a/src/gener/makefile
++++ b/src/gener/makefile
+@@ -11,7 +11,7 @@ GENEROBJ= genwd.o
+ CC=cc
+ CC=gcc
+ #CFLAGS= -O -I${INCLUDE}   -g
+-CFLAGS= -O2 -I${INCLUDE}
++CFLAGS= -O2 -std=gnu89 -I${INCLUDE} -Wno-error=implicit-function-declaration -Wno-error=implicit-int -Wno-error=return-mismatch -Wno-int-conversion -Wno-error=incompatible-function-pointer-types -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0
+ LINTFLAGS= -I${INCLUDE} -DDEBUG
+ RM=/bin/rm
+ CONJOBJ= conjmain.o conjsys.o combconj.o ppasstype.o
+diff --git a/src/gkdict/makefile b/src/gkdict/makefile
+index 417c01d..c33458e 100755
+--- a/src/gkdict/makefile
++++ b/src/gkdict/makefile
+@@ -13,7 +13,7 @@ CC=cc
+ CC=gcc
+ #CFLAGS= -O -I${INCLUDE}   -g
+ #CFLAGS= -O -I${INCLUDE}   -Wstrict-prototypes   -Wmissing-prototypes
+-CFLAGS= -O2 -I${INCLUDE}   
++CFLAGS= -O2 -std=gnu89 -I${INCLUDE} -Wno-error=implicit-function-declaration -Wno-error=implicit-int -Wno-error=return-mismatch -Wno-int-conversion -Wno-error=incompatible-function-pointer-types -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0
+ LINTFLAGS= -I${INCLUDE} -DDEBUG
+ RM=/bin/rm -f
+ 
+diff --git a/src/gkends/makefile b/src/gkends/makefile
+index fd35e80..71d7e88 100755
+--- a/src/gkends/makefile
++++ b/src/gkends/makefile
+@@ -1,5 +1,5 @@
+ INCLUDE=../includes
+-CFLAGS= -O2 -I${INCLUDE}  
++CFLAGS= -O2 -std=gnu89 -I${INCLUDE} -Wno-error=implicit-function-declaration -Wno-error=implicit-int -Wno-error=return-mismatch -Wno-int-conversion -Wno-error=incompatible-function-pointer-types -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0
+ RM=rm
+ ENDLIB=gkends.a
+ CC=cc
+diff --git a/src/gkends/mkend.c b/src/gkends/mkend.c
+index 2118439..1cc5100 100755
+--- a/src/gkends/mkend.c
++++ b/src/gkends/mkend.c
+@@ -282,7 +282,7 @@ printf("gks [%s] lastc [%c] stem [%s] endstr [%s]\n", gkstring_of(gstr), lastc ,
+ 	
+ 	zap_extra_lmarks(stem);
+ 	if( Is_lvwl(*(lastn(stem,1))) && *endstr == HARDLONG ) {
+-		strcpy(endstr,endstr+1);
++		memmove(endstr,endstr+1,Xstrlen(endstr+1)+1);
+ 	}
+ }
+ 
+diff --git a/src/gkends/stor.c b/src/gkends/stor.c
+index cb5af78..6763897 100755
+--- a/src/gkends/stor.c
++++ b/src/gkends/stor.c
+@@ -173,7 +173,7 @@ hyphtodiaer(char *news)
+ 		
+ 	while(*s) {
+ 		if(*s=='-' ) {
+-			strcpy(s,s+1);
++			memmove(s,s+1,Xstrlen(s+1)+1);
+ 			if( is_diphth(s,news) ) {
+ 				cinsert(DIAERESIS,s+1);
+ 			}
+diff --git a/src/greeklib/makefile b/src/greeklib/makefile
+index 404fc3a..1663bd3 100755
+--- a/src/greeklib/makefile
++++ b/src/greeklib/makefile
+@@ -1,5 +1,5 @@
+ INCLUDE=../includes
+-CFLAGS= -O2 -I${INCLUDE}
++CFLAGS= -O2 -std=gnu89 -I${INCLUDE} -Wno-error=implicit-function-declaration -Wno-error=implicit-int -Wno-error=return-mismatch -Wno-int-conversion -Wno-error=incompatible-function-pointer-types -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0
+ LIB=greeklib.a
+ RM=rm
+ CC=cc
+diff --git a/src/greeklib/xstrings.c b/src/greeklib/xstrings.c
+index 7f9fde4..25aa3ff 100755
+--- a/src/greeklib/xstrings.c
++++ b/src/greeklib/xstrings.c
+@@ -9,7 +9,11 @@ Xstrncpy(char *s1, const char *s2, size_t len)
+ /*
+ strncpy(s1,s2,len);
+ */
+-strcpy(s1,s2);
++/* overlap-safe copy: legacy code does things like Xstrncpy(line+4,line+5,...) */
++if( s1 > s2 && s1 < s2 + Xstrlen(s2) + 1 )
++	memmove(s1, s2, (size_t)(Xstrlen(s2) + 1));
++else
++	strcpy(s1,s2);
+ return(1);
+ }
+ 	
+diff --git a/src/morphlib/makefile b/src/morphlib/makefile
+index 04f75d4..1bd7973 100755
+--- a/src/morphlib/makefile
++++ b/src/morphlib/makefile
+@@ -1,5 +1,5 @@
+ INCLUDE=../includes
+-CFLAGS= -O2   -I${INCLUDE}
++CFLAGS= -O2 -std=gnu89 -I${INCLUDE} -Wno-error=implicit-function-declaration -Wno-error=implicit-int -Wno-error=return-mismatch -Wno-int-conversion -Wno-error=incompatible-function-pointer-types -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0
+ MORPHLIB=morphlib.a
+ RM=rm
+ CC=cc
+diff --git a/src/retr/stripdiacrit.c b/src/retr/stripdiacrit.c
+index 38703b2..94a6663 100755
+--- a/src/retr/stripdiacrit.c
++++ b/src/retr/stripdiacrit.c
+@@ -16,7 +16,7 @@ register char * s;
+ {
+ 	while(*s) {
+ 		if( IS_ACC(*s) ) {
+-			strcpy(s,s+1);
++			memmove(s,s+1,Xstrlen(s+1)+1);
+ 			continue;
+ 		}
+ 		s++;
+@@ -29,7 +29,7 @@ register char * s;
+ {
+ 	while(*s) {
+ 		if( IS_BREATH(*s) ) {
+-			strcpy(s,s+1);
++			memmove(s,s+1,Xstrlen(s+1)+1);
+ 			continue;
+ 		}
+ 		s++;
+diff --git a/stemlib/Greek/makefile b/stemlib/Greek/makefile
+index 3cd01cf..76b201f 100755
+--- a/stemlib/Greek/makefile
++++ b/stemlib/Greek/makefile
+@@ -1,5 +1,5 @@
+ CC= gcc
+-CFLAGS= -O2
++CFLAGS= -O2 -std=gnu89 -Wno-error=implicit-function-declaration -Wno-error=implicit-int -Wno-error=return-mismatch -Wno-int-conversion
+ LSJDIR=/local/text/lsj
+ 
+ STEMPROG= stemsrc/stripref stemsrc/zapfirstf stemsrc/headnolen \
