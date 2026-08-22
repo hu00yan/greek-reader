@@ -11406,6 +11406,126 @@
      "path": "data/tlg2046/tlg001/tlg2046.tlg001.perseus-grc2.xml"
     }
    ]
+  },
+  {
+   "id": "tlg001",
+   "author": "Hippocrates",
+   "authorTlg": "tlg0627",
+   "title": "Ancient Medicine",
+   "urn": "urn:cts:greekLit:tlg0627.tlg001",
+   "license": "CC BY-SA 3.0",
+   "source": "https://raw.githubusercontent.com/PerseusDL/canonical-greekLit/master/",
+   "files": [
+    {
+     "repo": "perseus",
+     "path": "data/tlg0627/tlg001/tlg0627.tlg001.perseus-grc2.xml"
+    }
+   ]
+  },
+  {
+   "id": "tlg002",
+   "author": "Hippocrates",
+   "authorTlg": "tlg0627",
+   "title": "Airs, Waters, Places",
+   "urn": "urn:cts:greekLit:tlg0627.tlg002",
+   "license": "CC BY-SA 3.0",
+   "source": "https://raw.githubusercontent.com/PerseusDL/canonical-greekLit/master/",
+   "files": [
+    {
+     "repo": "perseus",
+     "path": "data/tlg0627/tlg002/tlg0627.tlg002.perseus-grc2.xml"
+    }
+   ]
+  },
+  {
+   "id": "tlg003",
+   "author": "Hippocrates",
+   "authorTlg": "tlg0627",
+   "title": "Prognostic",
+   "urn": "urn:cts:greekLit:tlg0627.tlg003",
+   "license": "CC BY-SA 3.0",
+   "source": "https://raw.githubusercontent.com/PerseusDL/canonical-greekLit/master/",
+   "files": [
+    {
+     "repo": "perseus",
+     "path": "data/tlg0627/tlg003/tlg0627.tlg003.perseus-grc2.xml"
+    }
+   ]
+  },
+  {
+   "id": "tlg004",
+   "author": "Hippocrates",
+   "authorTlg": "tlg0627",
+   "title": "Regimen in Acute Diseases",
+   "urn": "urn:cts:greekLit:tlg0627.tlg004",
+   "license": "CC BY-SA 3.0",
+   "source": "https://raw.githubusercontent.com/PerseusDL/canonical-greekLit/master/",
+   "files": [
+    {
+     "repo": "perseus",
+     "path": "data/tlg0627/tlg004/tlg0627.tlg004.perseus-grc2.xml"
+    }
+   ]
+  },
+  {
+   "id": "tlg006",
+   "author": "Hippocrates",
+   "authorTlg": "tlg0627",
+   "title": "Epidemics",
+   "urn": "urn:cts:greekLit:tlg0627.tlg006",
+   "license": "CC BY-SA 3.0",
+   "source": "https://raw.githubusercontent.com/PerseusDL/canonical-greekLit/master/",
+   "files": [
+    {
+     "repo": "perseus",
+     "path": "data/tlg0627/tlg006/tlg0627.tlg006.perseus-grc2.xml"
+    }
+   ]
+  },
+  {
+   "id": "tlg007",
+   "author": "Hippocrates",
+   "authorTlg": "tlg0627",
+   "title": "On Head Wounds",
+   "urn": "urn:cts:greekLit:tlg0627.tlg007",
+   "license": "CC BY-SA 3.0",
+   "source": "https://raw.githubusercontent.com/PerseusDL/canonical-greekLit/master/",
+   "files": [
+    {
+     "repo": "perseus",
+     "path": "data/tlg0627/tlg007/tlg0627.tlg007.perseus-grc2.xml"
+    }
+   ]
+  },
+  {
+   "id": "tlg008",
+   "author": "Hippocrates",
+   "authorTlg": "tlg0627",
+   "title": "The Physician",
+   "urn": "urn:cts:greekLit:tlg0627.tlg008",
+   "license": "CC BY-SA 3.0",
+   "source": "https://raw.githubusercontent.com/PerseusDL/canonical-greekLit/master/",
+   "files": [
+    {
+     "repo": "perseus",
+     "path": "data/tlg0627/tlg008/tlg0627.tlg008.perseus-grc2.xml"
+    }
+   ]
+  },
+  {
+   "id": "tlg013",
+   "author": "Hippocrates",
+   "authorTlg": "tlg0627",
+   "title": "Oath",
+   "urn": "urn:cts:greekLit:tlg0627.tlg013",
+   "license": "CC BY-SA 3.0",
+   "source": "https://raw.githubusercontent.com/PerseusDL/canonical-greekLit/master/",
+   "files": [
+    {
+     "repo": "perseus",
+     "path": "data/tlg0627/tlg013/tlg0627.tlg013.perseus-grc2.xml"
+    }
+   ]
   }
  ]
 }
