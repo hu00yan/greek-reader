@@ -1,0 +1,14 @@
+[
+  {
+    "id": "iliad",
+    "author": "Homer",
+    "title": "Iliad",
+    "greek": "Ἰλιάς",
+    "books": [
+      {
+        "n": "1",
+        "file": "iliad.1.json"
+      }
+    ]
+  }
+]
