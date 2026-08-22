@@ -1,15 +1,29 @@
-"""Build the multi-author corpus per the frontend contract (src/api.ts):
+"""Build the FULL corpus: every manifest work -> static JSON shards.
 
-  public/data/catalog.json                    {authors:[{name,tlg,works:[...]}]}
-  public/data/texts/<tlg>/<work>-partNN.json  {id,author,title,kind,
-                                               units:[{ref,words}]}
-  public/data/morph/<letter>.json             merged Morpheus shards
+Drives off pipeline/manifest.json and emits:
 
-Sources: cached Perseus TEI texts under .cache-corpus/texts.  All unique
-Greek forms are batch-analysed through the local Morpheus cruncher and
-merged into the existing morph shards.
+  public/data/texts/<authorTlg>/<id>-partNN.json   text units (<=~1 MB/file)
+  public/data/morph/{a-z}.json                     corpus-wide morphology
+  public/data/catalog.json                         authors -> works -> parts
+  public/data/gloss/{a-z}.json                     (via build_glosses.py)
+  pipeline/ingest-failures.md                      files excluded twice-failed
 
-Usage:  python3 pipeline/build_corpus.py
+CONTRACT (stable — the frontend reads catalog.json):
+  catalog.json = {"authors":[{"name":str,"tlg":"tlgNNNN","works":[{
+      "id":str,"title":str,"urn":"urn:cts:greekLit:...","license":str,
+      "files":["texts/<authorTlg>/<id>-partNN.json",...],
+      "unitCount":int}]}]}
+  part file = {"id":str,"author":str,"title":str,
+               "kind":"verse"|"prose",
+               "units":[{"ref":"1.1"|"steph.17a"|"2.3"|"p12",
+                         "words":[str,...]}]}
+
+Pipeline stages (checkpointed under .cache-corpus/units/, rerun-safe):
+  parse  TEI -> units NDJSON per work      (.cache-corpus/units/)
+  morph  unique forms -> cruncher batches  -> public/data/morph/
+  emit   units -> part files + catalog.json
+
+Usage:  python3 pipeline/build_corpus.py [--fresh] [parse|morph|emit]
 """
 
 from __future__ import annotations
@@ -17,7 +31,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
+import time
 import xml.etree.ElementTree as ET
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -25,251 +42,591 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 
 import betacode  # noqa: E402
-from build_work import tokenize, run_cruncher, MORPH_DIR, DATA  # noqa: E402
 
-NS = "http://www.tei-c.org/ns/1.0"
-CACHE = os.path.join(ROOT, ".cache-corpus", "texts")
-TEXTS_DIR = os.path.join(DATA, "texts")
-UNITS_PER_PART = 150
+CRUNCHER = "/Users/huyan00/mycode/tools/morpheus/bin/cruncher"
+MORPHLIB = "/Users/huyan00/mycode/tools/morpheus/stemlib"
 
-# author name / tlg / work id / title / source file / mode / kind / scope
-WORKS = [
-    {"author": "Homer", "tlg": "tlg0012", "id": "iliad", "title": "Iliad",
-     "src": "tlg0012.tlg001.perseus-grc2.xml", "mode": "verse",
-     "kind": "verse", "limit": 611},
-    {"author": "Hesiod", "tlg": "tlg0020", "id": "theogony",
-     "title": "Theogony", "src": "tlg0020.tlg001.perseus-grc2.xml",
-     "mode": "verse", "kind": "verse", "limit": 120},
-    {"author": "Plato", "tlg": "tlg0059", "id": "apology", "title": "Apology",
-     "src": "tlg0059.tlg002.perseus-grc2.xml", "mode": "section",
-     "kind": "prose", "cap": 35, "limit": 26},
-    {"author": "Plutarch", "tlg": "tlg0007", "id": "themistocles",
-     "title": "Life of Themistocles",
-     "src": "tlg0007.tlg010.perseus-grc2.xml", "mode": "chapter-sections",
-     "kind": "prose", "cap": 35, "limit": 24},
-    {"author": "Herodotus", "tlg": "tlg0010", "id": "histories",
-     "title": "Histories (Book 1)", "src": "tlg0010.tlg001.perseus-grc2.xml",
-     "mode": "section", "kind": "prose", "cap": 35, "limit": 20},
-    {"author": "New Testament", "tlg": "tlg0031", "id": "mark", "title": "Mark",
-     "src": "tlg0031.tlg002.perseus-grc2.xml", "mode": "nt",
-     "kind": "verse", "limit": 4},
-    {"author": "New Testament", "tlg": "tlg0031", "id": "john", "title": "John",
-     "src": "tlg0031.tlg004.perseus-grc2.xml", "mode": "nt",
-     "kind": "verse", "limit": 4},
-]
+DATA = os.path.join(ROOT, "public", "data")
+MORPH_DIR = os.path.join(DATA, "morph")
+TEXTS = os.path.join(DATA, "texts")
+CACHE = os.path.join(ROOT, ".cache-corpus")
+UNITS = os.path.join(CACHE, "units")
+SRC = os.path.join(CACHE, "texts")
+FAILLOG = os.path.join(HERE, "ingest-failures.md")
 
-LICENSE = "CC BY-SA 3.0 (Perseus Digital Library)"
-DROP_TAGS = {f"{{{NS}}}note", f"{{{NS}}}head"}
+CRUNCH_CHUNK = 5000          # forms fed to cruncher per subprocess
+PROSE_MAX_WORDS = 60         # interlinear display chunk ceiling
+PART_TARGET_BYTES = 900_000  # flush a part file near this size (<1MB UTF-8)
+
+# Punctuation stripped from token edges; elision apostrophes are NOT here.
+PUNCT = ",.;:·«»()[]‹›…—?!“”„‘’\"*_"
 GREEK_RE = re.compile(r"[\u0370-\u03ff\u1f00-\u1fff]")
+STEPH_RE = re.compile(r"^\d{1,4}[a-z]?$")
+
+DROP_TAGS = {"note", "milestone", "pb", "figure", "graphic"}
+REF_PREFIX = {"section": "steph."}   # Stephanus sections (Plato, Plutarch)
+STEPH_AUTHORS = {"tlg0059", "tlg0007"}
 
 
-def tag(name: str) -> str:
-    return f"{{{NS}}}{name}"
+# --------------------------------------------------------------------------
+# tokenising (identical semantics to build_work.py) + Greek filter
 
 
-def textpart_divs(root, subtypes):
-    return [d for d in root.iter(tag("div"))
-            if d.get("type") == "textpart" and d.get("subtype") in subtypes]
+def tokenize(text: str) -> list[str]:
+    text = text.replace("\u02bc", "'").replace("\u2019", "'")
+    words = []
+    for raw in text.split():
+        tok = raw.strip(PUNCT).strip()
+        if tok:
+            words.append(tok)
+    return words
 
 
-def clean_text(el) -> str:
-    """itertext of el after removing note/head elements."""
+def greek_words(words: list[str]) -> list[str]:
+    """Keep tokens carrying at least one Greek letter (drops Latin junk,
+    bare numerals, symbols) — corpus hygiene on top of tokenize()."""
+    return [w for w in words if GREEK_RE.search(w)]
+
+
+# --------------------------------------------------------------------------
+# TEI parsing (namespace-agnostic, dual-repo shapes)
+
+
+def _strip_namespaces(root) -> None:
+    for el in root.iter():
+        if isinstance(el.tag, str) and el.tag.startswith("{"):
+            el.tag = el.tag.split("}", 1)[1]
+
+
+def _clean_tree(root) -> None:
+    """Remove editorial apparatus; resolve critical-apparatus choices.
+    Dropped elements donate their tail text to the preceding node so no
+    words are lost (milestones/notes often sit mid-line)."""
+    parent = {c: p for p in root.iter() for c in p}
+
+    def drop(el) -> None:
+        p = parent.get(el)
+        if p is None:
+            return
+        tail = el.tail or ""
+        sibs = list(p)
+        idx = sibs.index(el)
+        if idx > 0:
+            prev = sibs[idx - 1]
+            prev.tail = (prev.tail or "") + tail
+        else:
+            p.text = (p.text or "") + tail
+        p.remove(el)
+
+    for el in list(root.iter()):
+        tag = el.tag
+        if tag in DROP_TAGS or tag == "del":
+            drop(el)
+        elif tag == "choice":
+            p = parent.get(el)
+            if p is None:
+                continue
+            kids = list(el)
+            keep = el.find("corr")
+            if keep is None:
+                keep = el.find("orig") if el.find("orig") is not None \
+                    else (kids[0] if kids else None)
+            sibs = list(p)
+            p.remove(el)
+            if keep is not None:
+                keep.tail = (keep.tail or "") + (el.tail or "")
+                p.insert(sibs.index(el), keep)
+
+
+def _node_text(el) -> str:
+    """Deep text with glue-detection: a space is inserted where an element
+    boundary would otherwise fuse two words together."""
     parts: list[str] = []
 
-    def walk(e):
-        if e.tag in DROP_TAGS:
-            return
+    def rec(e) -> None:
         if e.text:
             parts.append(e.text)
-        for c in e:
-            walk(c)
-            if c.tail:
-                parts.append(c.tail)
+        for ch in e:
+            rec(ch)
+            tail = ch.tail or ""
+            if parts and parts[-1] and tail and \
+                    parts[-1][-1].isalnum() and tail[0].isalnum():
+                parts.append(" ")
+            parts.append(tail)
 
-    walk(el)
+    rec(el)
     return "".join(parts)
 
 
-def chunk_words(words, cap):
-    """Split tokenised prose into chunks <=cap words."""
-    chunks, cur = [], []
-    for w in words:
-        cur.append(w)
-        if len(cur) >= cap:
-            chunks.append(cur)
-            cur = []
-    if cur:
-        if chunks and len(cur) < cap // 3:
-            chunks[-1].extend(cur)
-        else:
-            chunks.append(cur)
-    return chunks
-
-
-def units_for(work):
-    """Return [{ref, words}] for one work."""
-    tree = ET.parse(os.path.join(CACHE, work["src"]))
-    root = tree.getroot()
-    mode, units = work["mode"], []
-
-    def add(ref, text):
-        words = tokenize(text)
-        if words:
-            units.append({"ref": ref, "words": words})
-
-    if mode == "verse":
-        books = textpart_divs(root, {"Book"})
-        src = books[0] if books else root
-        n = 0
-        for l_el in src.findall(f".//{tag('l')}"):
-            add(l_el.get("n") or str(n + 1), clean_text(l_el))
-            n += 1
-            if n >= work["limit"]:
-                break
-
-    elif mode == "nt":
-        for ch in textpart_divs(root, {"chapter"})[: work["limit"]]:
-            cn = ch.get("n") or "?"
-            for v in ch.findall(f"./{tag('div')}"):
-                if v.get("subtype") != "verse":
-                    continue
-                add(f"{cn}.{v.get('n')}", clean_text(v))
-
-    elif mode in ("section", "chapter-sections"):
-        doc_units = textpart_divs(root, {"section"})
-        if mode == "chapter-sections":
-            n_ch = max(1, round(work["limit"] / 3))
-            sel = {id(c) for c in textpart_divs(root, {"chapter"})[:n_ch]}
-            ok = False
-            picked = []
-            for d in root.iter(tag("div")):
-                if d.get("type") != "textpart":
-                    continue
-                if d.get("subtype") == "chapter":
-                    ok = id(d) in sel
-                elif d.get("subtype") == "section" and ok:
-                    picked.append(d)
-            doc_units = picked
-        cap = work.get("cap", 35)
-        for u in doc_units[: work["limit"]]:
-            num = u.get("n") or "?"
-            chunks = chunk_words(tokenize(clean_text(u)), cap)
-            multi = len(chunks) > 1
-            for i, chunk in enumerate(chunks, 1):
-                words = chunk
-                if words:
-                    units.append({"ref": f"{num}.{i}" if multi else num,
-                                  "words": words})
-    else:
-        raise SystemExit(f"unknown mode {mode}")
-    return units
-
-
-def crunch_all(forms):
-    """Morpheus analysis with slicing + one retry pass; {beta: [parses]}."""
-
-    def crunch(fs):
-        out = {}
-        SLICE = 150  # giant single stdin batches lose cruncher sync
-        for i in range(0, len(fs), SLICE):
-            for k, v in run_cruncher(fs[i:i + SLICE]).items():
-                if v:
-                    out[k] = v
-        return out
-
-    beta_forms = [betacode.to_beta(f) for f in sorted(forms)
-                  if GREEK_RE.search(f)]
-    analyses = crunch(beta_forms)
-    missing = [b for b in beta_forms if not analyses.get(b)]
-    print(f"retrying {len(missing)} unanalysed forms")
-    for k, v in crunch(missing).items():
-        if v:
-            analyses[k] = v
-    return analyses
-
-
-def main():
-    all_units, forms = {}, set()
-    for w in WORKS:
-        us = units_for(w)
-        all_units[(w["tlg"], w["id"])] = us
-        for u in us:
-            forms.update(u["words"])
-        print(f'{w["tlg"]}/{w["id"]}: {len(us)} units')
-    print(f"{len(forms)} unique word forms")
-
-    analyses = crunch_all(forms)
-
-    # merge morph shards
-    shards = {}
-    for fn in os.listdir(MORPH_DIR):
-        if fn.endswith(".json"):
-            with open(os.path.join(MORPH_DIR, fn), encoding="utf-8") as fh:
-                shards[fn[:-5]] = json.load(fh)
-    added = 0
-    for form in sorted(forms):
-        parses = analyses.get(betacode.to_beta(form)) or []
-        key = betacode.strip_accents(form)
-        letter = betacode.shard_key(key)
-        if letter is None or not parses:
+def _regex_units(blob: str) -> tuple[list[dict], int]:
+    """Fallback for SGML-ish files ElementTree rejects: pull <l>/<p> raw."""
+    units: list[dict] = []
+    pn = 0
+    for m in re.finditer(r"<l\b[^>]*\bn=\"([^\"]*)\"[^>]*>(.*?)</l>|"
+                         r"<p\b[^>]*>(.*?)</p>", blob, re.S | re.I):
+        n = m.group(1)
+        body = m.group(2) if m.group(2) is not None else m.group(3)
+        text = re.sub(r"<[^>]+>", " ", body)
+        words = greek_words(tokenize(re.sub(r"\s+", " ", text).strip()))
+        if not words:
             continue
-        compact = [{"l": p["l"], "p": p["p"], "f": p["f"],
-                    **({"x": p["x"]} if p["x"] else {})} for p in parses]
-        shard = shards.setdefault(letter, {})
-        if key not in shard:
-            added += 1
-        shard[key] = compact
-    for letter, table in shards.items():
+        if m.group(2) is not None:
+            ref = n or str(len(units) + 1)
+        else:
+            pn += 1
+            ref = f"p{pn}"
+        units.append({"ref": ref, "words": words})
+    return units, 0
+
+
+def _chunk_prose(words: list[str]) -> list[list[str]]:
+    """Split a paragraph's words into sentence-ish <=60-word chunks."""
+    if len(words) <= PROSE_MAX_WORDS:
+        return [words]
+    out: list[list[str]] = []
+    buf: list[str] = []
+    for w in words:
+        buf.append(w)
+        if len(buf) >= PROSE_MAX_WORDS:
+            out.append(buf)
+            buf = []
+    if buf:
+        if out and len(buf) <= PROSE_MAX_WORDS // 3:
+            out[-1].extend(buf)
+        else:
+            out.append(buf)
+    return out
+
+
+def parse_source_file(path: str,
+                      allow_steph: bool = False) -> tuple[list[dict], int]:
+    """One TEI file -> ([{ref, words}], count_of_verse_units)."""
+    blob = open(path, encoding="utf-8", errors="replace").read()
+    try:
+        root = ET.fromstring(blob.encode("utf-8"))
+    except ET.ParseError:
+        return _regex_units(blob)
+
+    _strip_namespaces(root)
+    _clean_tree(root)
+
+    # child -> parent map for textpart-chain lookups
+    tp_parent: dict[int, object] = {}
+    for p in root.iter():
+        for c in p:
+            tp_parent[id(c)] = p
+
+    def tp_chain(el):
+        chain = []
+        cur = el
+        while cur is not None:
+            if getattr(cur, "tag", None) == "div" \
+                    and cur.get("type") == "textpart":
+                chain.append(cur)
+            cur = tp_parent.get(id(cur))
+        chain.reverse()
+        return chain
+
+    prose_pn = 0
+    units: list[dict] = []
+    n_verse_units = 0
+
+    def emit_words(raw_text: str, ref: str) -> None:
+        words = greek_words(tokenize(re.sub(r"\s+", " ", raw_text).strip()))
+        if not words:
+            return
+        pieces = _chunk_prose(words)
+        for k, piece in enumerate(pieces):
+            units.append({"ref": ref if k == 0 else f"{ref}.{k + 1}",
+                          "words": piece})
+
+    for el in root.iter():
+        if el.tag not in ("l", "p"):
+            continue
+        chain = tp_chain(el)
+        ns = [d.get("n") for d in chain if d.get("n")]
+        prefix = ""
+        if allow_steph and chain and \
+                REF_PREFIX.get(chain[-1].get("subtype") or "") \
+                and ns and STEPH_RE.match(ns[-1]):
+            prefix = REF_PREFIX[chain[-1].get("subtype")]
+
+        if el.tag == "l":
+            ln = el.get("n") or ""
+            seq = ns + ([ln] if ln else [])
+            ref = prefix + ".".join(x for x in seq if x)
+            words = greek_words(tokenize(_node_text(el)))
+            if words:
+                units.append({"ref": ref or str(len(units) + 1),
+                              "words": words})
+                n_verse_units += 1
+        else:
+            base = prefix + ".".join(ns) if ns else None
+            if not base:
+                prose_pn += 1
+                base = f"p{prose_pn}"
+            emit_words(_node_text(el), base)
+    return units, n_verse_units
+
+
+# --------------------------------------------------------------------------
+# stage: parse
+
+
+def edition_rank(fname: str):
+    """Lower sorts first: prefer Perseus grc editions (newest number),
+    then First1K grc1."""
+    m = re.search(r"-(?:perseus|1st1K)-grc(\d+)\.xml$", fname)
+    n = int(m.group(1)) if m else 0
+    return (0 if "-perseus-" in fname else 1, -n, fname)
+
+
+def load_manifest() -> dict:
+    return json.load(open(os.path.join(HERE, "manifest.json")))
+
+
+def stage_parse(fresh: bool) -> list[dict]:
+    os.makedirs(UNITS, exist_ok=True)
+    man = load_manifest()
+    failures_path = os.path.join(UNITS, "_failures.json")
+    failures: list[tuple[str, str]] = []
+    if fresh and os.path.exists(failures_path):
+        os.remove(failures_path)
+    elif os.path.exists(failures_path):
+        failures = [tuple(x) for x in json.load(open(failures_path))]
+    works_meta: list[dict] = []
+
+    for wi, w in enumerate(man["works"]):
+        tlg, wid = w["authorTlg"], w["id"]
+        out_path = os.path.join(UNITS, f"{tlg}--{wid}.ndjson")
+        meta_path = out_path + ".meta.json"
+        if not fresh and os.path.exists(out_path) and \
+                os.path.exists(meta_path):
+            works_meta.append(json.load(open(meta_path)))
+            continue
+
+        cands = sorted(w["files"],
+                       key=lambda f: edition_rank(os.path.basename(f["path"])))
+        parsed: list[tuple[dict, list[dict], int]] = []
+        for f in cands:
+            src = os.path.join(SRC, os.path.basename(f["path"]))
+            units: list[dict] = []
+            n_l = 0
+            ok = True
+            for attempt in range(2):
+                try:
+                    units, n_l = parse_source_file(
+                        src, allow_steph=tlg in STEPH_AUTHORS)
+                    break
+                except Exception as exc:                      # noqa: BLE001
+                    print(f"  ! {src}: attempt {attempt + 1} failed: {exc}")
+                    units, n_l = [], 0
+            if not units:
+                ok = False
+            if not ok:
+                failures.append((w["author"], os.path.basename(src)))
+            elif units:
+                parsed.append((f, units, n_l))
+
+        chosen: list[tuple[dict, list[dict], int]] = []
+        seen_refs: set[str] = set()
+        skipped_editions: list[str] = []
+        for f, units, n_l in parsed:
+            refs = {u["ref"] for u in units}
+            if chosen and refs:
+                overlap = len(refs & seen_refs) / min(len(refs),
+                                                      max(len(seen_refs), 1))
+                if overlap > 0.3:
+                    skipped_editions.append(os.path.basename(f["path"]))
+                    continue     # duplicate edition of something already kept
+            chosen.append((f, units, n_l))
+            seen_refs |= refs
+
+        total_units = sum(len(us) for _, us, _ in chosen)
+        if not chosen:
+            print(f"[{wi + 1}/{len(man['works'])}] SKIP {tlg}/{wid}: "
+                  f"no usable source")
+            continue
+        n_verse = sum(nl for _, _, nl in chosen)
+        kind = "verse" if n_verse * 2 > total_units else "prose"
+
+        with open(out_path, "w", encoding="utf-8") as fh:
+            for _, us, _ in chosen:
+                for u in us:
+                    fh.write(json.dumps(u, ensure_ascii=False,
+                                        separators=(",", ":")) + "\n")
+        meta = {
+            "id": wid, "author": w["author"], "tlg": tlg,
+            "title": w["title"], "urn": w["urn"], "license": w["license"],
+            "kind": kind, "unitCount": total_units,
+            "sources": [os.path.basename(f["path"]) for f, _, _ in chosen],
+            "skippedEditions": skipped_editions,
+        }
+        json.dump(meta, open(meta_path, "w", encoding="utf-8"),
+                  ensure_ascii=False, indent=1)
+        works_meta.append(meta)
+        if (wi + 1) % 50 == 0 or wi + 1 == len(man["works"]):
+            print(f"[parse {wi + 1}/{len(man['works'])}] "
+                  f"{tlg}/{wid}: {total_units} units ({kind})", flush=True)
+
+    with open(os.path.join(UNITS, "_works.json"), "w", encoding="utf-8") as fh:
+        json.dump(works_meta, fh, ensure_ascii=False)
+    with open(failures_path, "w", encoding="utf-8") as fh:
+        json.dump(failures, fh, ensure_ascii=False)
+
+    if failures:
+        seen = set()
+        with open(FAILLOG, "w", encoding="utf-8") as fh:
+            fh.write("# Ingest failures (excluded from corpus)\n\n")
+            for author, src in failures:
+                if (author, src) in seen:
+                    continue
+                seen.add((author, src))
+                fh.write(f"- {author}: `{src}` — parsing failed twice or "
+                         f"yielded no text\n")
+        print(f"{len(seen)} failures logged -> {FAILLOG}")
+    elif os.path.exists(FAILLOG):
+        os.remove(FAILLOG)
+    print(f"[S1] parse complete: {len(works_meta)} works, "
+          f"{len(failures)} failure entries")
+    return works_meta
+
+
+# --------------------------------------------------------------------------
+# stage: morphology
+
+
+def parse_record(rec: str) -> tuple[str, str, str, str] | None:
+    """Parse one '<NL>' payload: POS headword␣␣features[\\textra\\t\\textra]."""
+    parts = rec.split("\t")
+    head = parts[0]
+    m = re.match(r"^(\S+)\s+(\S+)\s*(.*)$", head)
+    if not m:
+        return None
+    pos, hw_beta, features = m.group(1), m.group(2), m.group(3).strip()
+    dialects, stemtypes = [], []
+    for extra in parts[1:]:
+        for tok in extra.split():
+            if "_" in tok or "=" in tok:
+                stemtypes.append(tok)
+            elif tok.isalpha() and tok.islower() and tok.isascii():
+                dialects.append(tok)
+    x = ""
+    if dialects:
+        x += " ".join(dialects)
+    if stemtypes:
+        x += ("|" if x else "") + ",".join(stemtypes)
+    lemma_beta = hw_beta.split(",")[-1]
+    return (betacode.from_beta(lemma_beta), pos, features, x)
+
+
+def run_cruncher(beta_forms: list[str]) -> dict[str, list]:
+    """Echo-sync batch (same protocol as build_work.py), compact tuples."""
+    unique = list(dict.fromkeys(beta_forms))
+    buckets: dict[str, list] = {f: [] for f in unique}
+    env = dict(os.environ, MORPHLIB=MORPHLIB)
+    proc = subprocess.run([CRUNCHER], input="\n".join(unique) + "\n",
+                          capture_output=True, text=True, env=env)
+    ptr = -1
+    WINDOW = 3
+    for raw in proc.stdout.splitlines():
+        line = raw.strip()
+        if not line or line.startswith(":"):
+            continue
+        nxt = ptr + 1
+        if nxt < len(unique) and line == unique[nxt]:
+            ptr = nxt          # clean echo
+            continue
+        if nxt < len(unique):
+            hit = -1
+            for off in range(1, WINDOW + 1):
+                j = nxt + off
+                if j < len(unique) and line == unique[j]:
+                    hit = j
+                    break
+            if hit >= 0:
+                ptr = hit      # skipped some unechoed inputs -> no parses
+                continue
+            if any(line.startswith(u) or u.startswith(line)
+                   for u in unique[nxt:nxt + WINDOW]):
+                continue       # mangled partial echo; treat as no parses
+        if ptr >= 0:
+            for rec in re.findall(r"<NL>(.*?)</NL>", line):
+                parsed = parse_record(rec)
+                if parsed:
+                    buckets[unique[ptr]].append(parsed)
+    unparsed = sum(1 for f in unique if not buckets[f])
+    print(f"cruncher: {len(unique)} forms, "
+          f"{len(unique) - unparsed} analysed, {unparsed} unparsed",
+          flush=True)
+    return buckets
+
+
+def iter_unit_lines():
+    for name in sorted(os.listdir(UNITS)):
+        if name.endswith(".ndjson"):
+            with open(os.path.join(UNITS, name), encoding="utf-8") as fh:
+                yield name, line_from(fh)
+
+
+def line_from(fh):
+    for line in fh:
+        yield line
+
+
+def stage_morph() -> None:
+    t0 = time.time()
+    surfaces: set[str] = set()
+    n_tokens = 0
+    for _, line in iter_unit_lines():
+        u = json.loads(line)
+        for w in u["words"]:
+            n_tokens += 1
+            surfaces.add(w)
+    beta_of = {}
+    for s in surfaces:
+        b = betacode.to_beta(s)
+        if betacode.shard_key(betacode.strip_accents(s)) is not None:
+            beta_of[s] = b
+    unique_beta = sorted(set(beta_of.values()))
+    print(f"[morph] {n_tokens} tokens, {len(surfaces)} surface forms, "
+          f"{len(unique_beta)} unique analysable forms", flush=True)
+
+    analyses: dict[str, list] = {}
+    nch = (len(unique_beta) + CRUNCH_CHUNK - 1) // CRUNCH_CHUNK
+    for ci in range(nch):
+        chunk = unique_beta[ci * CRUNCH_CHUNK:(ci + 1) * CRUNCH_CHUNK]
+        analyses.update(run_cruncher(chunk))
+        done = min((ci + 1) * CRUNCH_CHUNK, len(unique_beta))
+        print(f"[morph] chunk {ci + 1}/{nch} ({done} forms, "
+              f"{time.time() - t0:.0f}s)", flush=True)
+
+    # merge into accent-stripped keys, dedup parse tuples
+    tables: dict[str, dict[str, dict]] = {}
+    n_parsed = 0
+    for surface, beta in beta_of.items():
+        parses = analyses.get(beta) or []
+        if not parses:
+            continue
+        n_parsed += 1
+        key = betacode.strip_accents(surface)
+        letter = betacode.shard_key(key)
+        table = tables.setdefault(letter, {})
+        slot = table.setdefault(key, {})
+        for p in parses:
+            slot[f"{p[0]}\x1f{p[1]}\x1f{p[2]}\x1f{p[3]}"] = p
+
+    os.makedirs(MORPH_DIR, exist_ok=True)
+    total_entries = 0
+    for letter in sorted(tables):
+        table = tables[letter]
+        out = {key: [{"l": p[0], "p": p[1], "f": p[2],
+                      **({"x": p[3]} if p[3] else {})}
+                     for p in slot.values()]
+               for key, slot in table.items()}
         with open(os.path.join(MORPH_DIR, f"{letter}.json"), "w",
                   encoding="utf-8") as fh:
-            json.dump(table, fh, ensure_ascii=False, sort_keys=True,
+            json.dump(out, fh, ensure_ascii=False, sort_keys=True,
                       separators=(",", ":"))
-    print(f'morph shards merged: +{added} -> '
-          f'{sum(len(t) for t in shards.values())} entries')
+        total_entries += len(out)
+    print(f"[S1] morph shards: {len(tables)} files, {total_entries} keys, "
+          f"{n_parsed}/{len(surfaces)} surface forms analysed")
 
-    # emit part files + hierarchical catalog
-    catalog = {"authors": []}
-    authors_order = []
-    for w in WORKS:
-        units = all_units[(w["tlg"], w["id"])]
-        tdir = os.path.join(TEXTS_DIR, w["tlg"])
-        os.makedirs(tdir, exist_ok=True)
-        files = []
-        for pi in range(0, len(units), UNITS_PER_PART):
-            name = f'{w["id"]}-part{pi // UNITS_PER_PART + 1:02d}.json'
-            with open(os.path.join(tdir, name), "w", encoding="utf-8") as fh:
-                json.dump({"id": w["id"], "author": w["author"],
-                           "title": w["title"], "kind": w["kind"],
-                           "units": units[pi:pi + UNITS_PER_PART]},
-                          fh, ensure_ascii=False, separators=(",", ":"))
-            files.append(f'texts/{w["tlg"]}/{name}')
-        got = sum(1 for u in units
-                  if any(analyses.get(betacode.to_beta(f_w))
-                         for f_w in u["words"]))
-        print(f'coverage {w["id"]}: {got}/{len(units)} units analysed')
-        author_entry = next((a for a in catalog["authors"]
-                             if a["tlg"] == w["tlg"]), None)
-        if author_entry is None:
-            author_entry = {"name": w["author"], "tlg": w["tlg"],
-                            "works": []}
-            catalog["authors"].append(author_entry)
-        author_entry["works"].append({
-            "id": w["id"], "title": w["title"],
-            "urn": f'urn:cts:greekLit:{w["src"].replace(".xml", "")}',
-            "license": LICENSE,
-            "files": files, "unitCount": len(units),
-        })
 
+# --------------------------------------------------------------------------
+# stage: emit part files + catalog
+
+
+def iter_work_units(meta):
+    path = os.path.join(UNITS, f"{meta['tlg']}--{meta['id']}.ndjson")
+    with open(path, encoding="utf-8") as fh:
+        yield from fh
+
+
+def stage_emit() -> None:
+    works_meta = json.load(open(os.path.join(UNITS, "_works.json")))
+    if os.path.isdir(TEXTS):
+        shutil.rmtree(TEXTS)
+    os.makedirs(TEXTS)
+
+    authors: dict[str, dict] = {}
+    total_bytes = 0
+    for meta in works_meta:
+        adir = os.path.join(TEXTS, meta["tlg"])
+        os.makedirs(adir, exist_ok=True)
+        files: list[str] = []
+        buf: list[str] = []
+        bufsize = 0
+        part_no = 0
+        header = json.dumps({"id": meta["id"], "author": meta["author"],
+                             "title": meta["title"], "kind": meta["kind"]},
+                            ensure_ascii=False, separators=(",", ":"))
+
+        def flush(final: bool = False) -> None:
+            nonlocal buf, bufsize, part_no, total_bytes
+            if not buf and not final:
+                return
+            part_no += 1
+            rel = f"texts/{meta['tlg']}/{meta['id']}-part{part_no:02d}.json"
+            dest = os.path.join(ROOT, "public", "data", rel)
+            with open(dest, "w", encoding="utf-8") as fh:
+                fh.write(header[:-1] + ',"units":[' + ",".join(buf) + "]}\n")
+            files.append(rel)
+            total_bytes += os.path.getsize(dest)
+            buf, bufsize = [], 0
+
+        for line in iter_work_units(meta):
+            buf.append(line.rstrip("\n"))
+            bufsize += len(line.encode("utf-8")) + 1
+            if bufsize >= PART_TARGET_BYTES:
+                flush()
+        flush(final=True)
+
+        a = authors.setdefault(meta["tlg"], {
+            "name": meta["author"], "tlg": meta["tlg"], "works": []})
+        a["works"].append({
+            "id": meta["id"], "title": meta["title"], "urn": meta["urn"],
+            "license": meta["license"], "files": files,
+            "unitCount": meta["unitCount"]})
+
+    catalog = {"authors": [authors[k] for k in sorted(authors)]}
     with open(os.path.join(DATA, "catalog.json"), "w", encoding="utf-8") as fh:
-        json.dump(catalog, fh, ensure_ascii=False, indent=1)
+        json.dump(catalog, fh, ensure_ascii=False, separators=(",", ":"))
         fh.write("\n")
-    # mirror so stale hardcoded data/works.json paths keep resolving
-    with open(os.path.join(DATA, "works.json"), "w", encoding="utf-8") as fh:
-        json.dump(catalog, fh, ensure_ascii=False, indent=1)
-        fh.write("\n")
-    n_works = sum(len(a["works"]) for a in catalog["authors"])
-    print(f"wrote catalog.json: {len(catalog['authors'])} authors, "
-          f"{n_works} works")
+
+    for legacy in ("works.json", "iliad.1.json"):
+        p = os.path.join(DATA, legacy)
+        if os.path.exists(p):
+            os.remove(p)
+
+    n_files = sum(len(w["files"]) for a in catalog["authors"]
+                  for w in a["works"])
+    print(f"[CATALOG] authors={len(catalog['authors'])} "
+          f"works={sum(len(a['works']) for a in catalog['authors'])} "
+          f"files={n_files} sizeMB={total_bytes / 1e6:.1f}")
+
+
+# --------------------------------------------------------------------------
+
+
+def main() -> None:
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    fresh = "--fresh" in sys.argv
+    stages = args or ["parse", "morph", "emit"]
+
+    if fresh and "parse" in stages:
+        shutil.rmtree(UNITS, ignore_errors=True)
+
+    print("[S1] build_corpus starting: stages =", "+".join(stages))
+    if "parse" in stages:
+        stage_parse(fresh)
+    if "morph" in stages:
+        stage_morph()
+    if "emit" in stages:
+        stage_emit()
+    du = subprocess.run(["du", "-sh", DATA], capture_output=True, text=True)
+    nfiles = sum(len(fs) for _, _, fs in os.walk(DATA))
+    print(f"[S1] public/data = {du.stdout.split()[0]}, {nfiles} files")
 
 
 if __name__ == "__main__":
