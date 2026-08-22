@@ -103,6 +103,14 @@ def strip_accents(word: str) -> str:
     return s.replace("ς", "σ")
 
 
+def shard_key(text: str) -> str | None:
+    """Shard id shared by all data writers: first letter of the Beta-Code
+    transliteration of the accent-stripped text, a-z ASCII, else None."""
+    beta = to_beta(strip_accents(text)) if text else ""
+    ch = beta[0].lower() if beta else ""
+    return ch if "a" <= ch <= "z" else None
+
+
 if __name__ == "__main__":
     import subprocess, sys, os
     cases = [

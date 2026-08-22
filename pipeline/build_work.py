@@ -73,27 +73,53 @@ def parse_lines(path: str) -> list[dict]:
 
 
 def run_cruncher(beta_forms: list[str]) -> dict[str, list[dict]]:
-    """Batch all forms through cruncher; return {beta_form: [parse, ...]}."""
+    """Batch all forms through cruncher; return {beta_form: [parse, ...]}.
+
+    Cruncher echoes each input line then prints its <NL> records.  Echoes
+    can be dropped or mangled, so instead of trusting a strict 1:1 rhythm
+    we keep a pointer to the NEXT expected echo and search a small window
+    ahead for it; an unmatched word simply gets zero parses.
+    """
+    unique = list(dict.fromkeys(beta_forms))
+    buckets: dict[str, list[dict]] = {f: [] for f in unique}
     env = dict(os.environ, MORPHLIB=MORPHLIB)
     proc = subprocess.run(
         [CRUNCHER],
-        input="\n".join(beta_forms) + "\n",
+        input="\n".join(unique) + "\n",
         capture_output=True, text=True, env=env,
     )
-    buckets: dict[str, list[dict]] = {f: [] for f in beta_forms}
     ptr = -1
+    WINDOW = 3
     for raw in proc.stdout.splitlines():
         line = raw.strip()
         if not line or line.startswith(":"):
             continue  # debug chatter e.g. ":longtime"
-        if ptr + 1 < len(beta_forms) and line == beta_forms[ptr + 1]:
-            ptr += 1  # echo of an input word
+        nxt = ptr + 1
+        if nxt < len(unique) and line == unique[nxt]:
+            ptr = nxt          # clean echo
             continue
+        # lost sync? look a few lines-worth ahead for the expected echo
+        if nxt < len(unique):
+            hit = -1
+            for off in range(1, WINDOW + 1):
+                j = nxt + off
+                if j < len(unique) and line == unique[j]:
+                    hit = j
+                    break
+            if hit >= 0:
+                ptr = hit      # skipped some unechoed inputs -> no parses
+                continue
+            if any(line.startswith(u) or u.startswith(line)
+                   for u in unique[nxt:nxt + WINDOW]):
+                continue       # mangled partial echo; treat as no parses
         if ptr >= 0:
             for rec in re.findall(r"<NL>(.*?)</NL>", line):
                 parsed = parse_record(rec)
                 if parsed:
-                    buckets[beta_forms[ptr]].append(parsed)
+                    buckets[unique[ptr]].append(parsed)
+    unparsed = sum(1 for f in unique if not buckets[f])
+    print(f"cruncher: {len(unique)} unique forms, "
+          f"{len(unique) - unparsed} analysed, {unparsed} unparsed")
     return buckets
 
 
@@ -130,9 +156,7 @@ def parse_record(rec: str) -> dict | None:
 
 def shard_letter(key: str) -> str | None:
     """Shard id = first letter of the Beta-Code transliteration (a-z ASCII)."""
-    beta = betacode.to_beta(key)
-    ch = beta[0].lower() if beta else ""
-    return ch if "a" <= ch <= "z" else None
+    return betacode.shard_key(key)
 
 
 def main() -> None:
@@ -179,7 +203,8 @@ def main() -> None:
     with open(os.path.join(DATA, "iliad.1.json"), "w", encoding="utf-8") as fh:
         json.dump({
             "id": "iliad", "n": "1", "author": "Homer", "title": "Iliad",
-            "urn": "urn:cts:greekLit:tlg0012.tlg001.perseus-grc2:1.1-1.7",
+            "urn": (f"urn:cts:greekLit:tlg0012.tlg001.perseus-grc2:"
+                    f"1.{lines[0]['n']}-1.{lines[-1]['n']}"),
             "lines": lines,
         }, fh, ensure_ascii=False, separators=(",", ":"))
     print(f"wrote iliad.1.json ({len(lines)} lines)")
