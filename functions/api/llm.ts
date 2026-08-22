@@ -127,19 +127,20 @@ function buildUpstreamBody(
   model: string,
   messages: RelayMessage[],
   stream: boolean,
-  temperature?: number,
+  effort?: string,
   maxTokens?: number,
 ): Record<string, unknown> {
-  const temp =
-    typeof temperature === "number" && Number.isFinite(temperature)
-      ? temperature
-      : undefined;
+  // thinking-effort mapping (only forwarded when the user set one):
+  const eff = typeof effort === "string" &&
+    ["low", "medium", "high"].includes(effort)
+    ? effort
+    : undefined;
   if (protocol === "openai") {
     return {
       model,
       messages,
       stream,
-      ...(temp !== undefined ? { temperature: temp } : {}),
+      ...(eff ? { reasoning_effort: eff } : {}),
     };
   }
   const system = messages
@@ -148,6 +149,9 @@ function buildUpstreamBody(
     .join("\n\n");
   const convo = messages.filter((m) => m.role !== "system");
   if (protocol === "anthropic") {
+    const BUDGET: Record<string, number> = {
+      low: 2048, medium: 8192, high: 16384,
+    };
     return {
       model,
       max_tokens: typeof maxTokens === "number" && maxTokens > 0
@@ -156,7 +160,7 @@ function buildUpstreamBody(
       ...(system ? { system } : {}),
       messages: convo,
       stream: false,
-      ...(temp !== undefined ? { temperature: temp } : {}),
+      ...(eff ? { thinking: { type: "enabled", budget_tokens: BUDGET[eff] } } : {}),
     };
   }
   // responses
@@ -164,7 +168,7 @@ function buildUpstreamBody(
     model,
     input: messages.map(({ role, content }) => ({ role, content })),
     stream: false,
-    ...(temp !== undefined ? { temperature: temp } : {}),
+    ...(eff ? { reasoning: { effort: eff } } : {}),
   };
 }
 

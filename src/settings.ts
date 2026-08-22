@@ -1,38 +1,52 @@
-// Settings modal: bring-your-own-key provider configuration.
-// Persisted ONLY to localStorage key "greek-reader.llm" (see src/llm.ts).
+// Settings modal: bring-your-own-key provider profiles + cost caps.
+// Persisted to localStorage keys "greek-reader.llm.profiles" (profile array
+// with a default flag) and "greek-reader.llm" (template, caps, active id).
+//
+// Anti-runaway design note shown here and enforced in llm.ts: every AI call
+// originates from ONE explicit user click; there is no bulk/loop API.
+//
 // All DOM built with createElement/textContent — no innerHTML anywhere.
 
 import {
+  CAP_LIMITS,
+  DATA_NOTE,
   DEFAULT_BASE_URL,
-  DEFAULT_MODEL,
   DEFAULT_TEMPLATE,
   TEMPLATE_PLACEHOLDERS,
-  callLLM,
-  loadConfig,
-  saveConfig,
-  type LlmConfig,
+  loadCaps,
+  loadProfiles,
+  loadTemplate,
+  newDefaultProfile,
+  newId,
+  saveCaps,
+  saveProfiles,
+  saveTemplate,
+  setActiveProfile,
+  type Effort,
+  type Profile,
+  type Protocol,
 } from "./llm";
+import { callLLM } from "./llm";
 
-interface FieldRefs {
-  baseUrl: HTMLInputElement;
-  apiKey: HTMLInputElement;
-  model: HTMLInputElement;
-  temperature: HTMLInputElement;
-  template: HTMLTextAreaElement;
-}
+const PROTOCOLS: Protocol[] = ["openai", "anthropic", "responses"];
+const EFFORTS: Array<{ v: Effort; label: string }> = [
+  { v: "", label: "default" },
+  { v: "low", label: "low" },
+  { v: "medium", label: "medium" },
+  { v: "high", label: "high" },
+];
 
 let modalOpen = false;
 
 interface SettingsOptions {
   onSaved?: () => void;
-  /** Shown in the status line when the dialog opens (e.g. "no key yet"). */
+  /** Shown in the status line when the dialog opens. */
   hint?: string;
 }
 
-/** Open (or focus) the settings dialog; resolves when it is closed. */
+/** Open the settings dialog (single instance). */
 export function openSettings(opts: SettingsOptions = {}): void {
   if (modalOpen) return;
-  const cfg = loadConfig();
   modalOpen = true;
 
   const backdrop = document.createElement("div");
@@ -43,91 +57,251 @@ export function openSettings(opts: SettingsOptions = {}): void {
   modal.setAttribute("role", "dialog");
   modal.setAttribute("aria-label", "AI settings");
 
-  const h2 = document.createElement("h2");
-  h2.textContent = "AI 设置 / AI Settings";
-  modal.appendChild(h2);
+  modal.appendChild(h2El("AI 设置 / AI Settings"));
 
-  const intro = document.createElement("p");
-  intro.className = "ai-privacy";
-  intro.textContent =
-    "Bring your own OpenAI-compatible API key. The key never leaves your " +
-    "browser except to the endpoint you specify (relayed via our /api/llm " +
-    "passthrough).";
+  const intro = pEl(
+    "ai-privacy",
+    "Bring your own OpenAI-compatible / Anthropic-compatible API key. The " +
+    "key never leaves your browser except to the endpoint you specify " +
+    "(relayed via our /api/llm passthrough).",
+  );
   modal.appendChild(intro);
 
-  const fields: FieldRefs = {
-    baseUrl: inputField("Provider Base URL", cfg.baseUrl || DEFAULT_BASE_URL),
-    apiKey: inputField("API Key", cfg.apiKey ?? ""),
-    model: inputField("Model", cfg.model || DEFAULT_MODEL),
-    temperature: inputField(
-      "Temperature (optional, e.g. 0.2)",
-      cfg.temperature !== undefined ? String(cfg.temperature) : "",
-    ),
-    template: promptField(cfg.template ?? DEFAULT_TEMPLATE),
-  };
+  /* ---- profile picker row ---- */
+  const store = loadProfiles();
+  let editingId =
+    store.profiles.find((p) => p.id === store.defaultId)?.id ??
+    store.profiles[0]?.id;
 
-  fields.baseUrl.setAttribute("placeholder", DEFAULT_BASE_URL);
-  fields.baseUrl.name = "baseUrl";
-  fields.apiKey.type = "password";
-  fields.apiKey.autocomplete = "off";
-  fields.model.placeholder = DEFAULT_MODEL;
-  fields.temperature.type = "number";
-  fields.temperature.step = "0.1";
-  fields.temperature.min = "0";
-  fields.temperature.max = "2";
+  const pickerRow = document.createElement("div");
+  pickerRow.className = "ai-field ai-profile-row";
 
-  for (const f of [fields.baseUrl, fields.apiKey, fields.model, fields.temperature]) {
-    modal.appendChild(f.closest(".ai-field") as HTMLElement);
-  }
+  const profileSel = document.createElement("select");
+  profileSel.className = "ai-select";
+  profileSel.setAttribute("aria-label", "Profile being edited");
 
-  // base-url hint
-  const hint = document.createElement("p");
-  hint.className = "ai-hint";
-  hint.textContent =
-    "Any OpenAI-compatible endpoint works — OpenRouter " +
-    "(https://openrouter.ai/api/v1), DeepSeek (https://api.deepseek.com/v1), " +
-    "a local LM Studio or Ollama URL, …";
-  (fields.baseUrl.closest(".ai-field") as HTMLElement).after(hint);
+  const newBtn = btnEl("ai-secondary", "New");
+  const delBtn = btnEl("ai-secondary", "Delete");
+  const defBtn = btnEl("ai-secondary", "Set default");
+  pickerRow.append(profileSel, newBtn, delBtn, defBtn);
+  modal.appendChild(pickerRow);
 
-  // prompt template
-  modal.appendChild(fields.template.closest(".ai-field") as HTMLElement);
-  const tHint = document.createElement("p");
-  tHint.className = "ai-hint";
-  tHint.textContent =
-    `Prompt template sent to the model. Placeholders: ` +
-    `${TEMPLATE_PLACEHOLDERS.join(", ")}.`;
-  (fields.template.closest(".ai-field") as HTMLElement).after(tHint);
+  /* ---- editable fields for the selected profile ---- */
+  const nameInp = inputField("Profile name");
+  const protoSel = selectField("Protocol", [
+    { v: "openai", label: "openai — chat/completions (OpenAI & compatible)" },
+    { v: "anthropic", label: "anthropic — /v1/messages" },
+    { v: "responses", label: "responses — OpenAI /v1/responses" },
+  ]) as HTMLSelectElement;
+  const baseUrlInp = inputField(
+    "Provider Base URL", DEFAULT_BASE_URL.openai);
+  const keyInp = inputField("API Key");
+  keyInp.type = "password";
+  keyInp.autocomplete = "off";
+  const modelInp = inputField("Model");
+  const effSel = selectField("Thinking effort", EFFORTS.map((e) => ({
+    v: e.v as string, label: e.label,
+  }))) as HTMLSelectElement;
 
-  // status line + buttons
-  const status = document.createElement("p");
-  status.className = "ai-status";
+  const fieldsWrap = document.createElement("div");
+  fieldsWrap.append(
+    nameInp.closest(".ai-field") as HTMLElement,
+    protoSel.closest(".ai-field") as HTMLElement,
+    baseUrlInp.closest(".ai-field") as HTMLElement,
+    keyInp.closest(".ai-field") as HTMLElement,
+    modelInp.closest(".ai-field") as HTMLElement,
+    effSel.closest(".ai-field") as HTMLElement,
+  );
+  modal.appendChild(fieldsWrap);
+
+  const baseUrlHint = pEl(
+    "ai-hint",
+    "Examples: https://api.openai.com/v1 · https://openrouter.ai/api/v1 · " +
+    "https://api.anthropic.com · DeepSeek or a local LM Studio/Ollama URL.",
+  );
+  fieldsWrap.insertBefore(
+    baseUrlHint, baseUrlInp.closest(".ai-field")!.nextSibling);
+
+  const effHint = pEl(
+    "ai-hint",
+    "Optional reasoning effort: openai → reasoning_effort, anthropic → " +
+    "thinking budget (2048/8192/16384 tokens), responses → reasoning.effort.",
+  );
+  fieldsWrap.insertBefore(effHint, effSel.closest(".ai-field")!.nextSibling);
+
+  /* ---- cost guards ---- */
+  modal.appendChild(h3El("Cost guards"));
+  const caps = loadCaps();
+  const callsInp = numberInput(
+    `Max calls per hour (${CAP_LIMITS.minCalls}–${CAP_LIMITS.maxCalls})`,
+    String(caps.maxCallsPerHour),
+  );
+  const charsInp = numberInput(
+    `Max prompt characters (${CAP_LIMITS.defaultChars.toLocaleString()} default)`,
+    String(caps.maxInputChars),
+  );
+  modal.append(callsInp.closest(".ai-field") as HTMLElement);
+  modal.appendChild(charsInp.closest(".ai-field") as HTMLElement);
+  modal.appendChild(pEl(
+    "ai-hint",
+    "Hard caps with a sliding one-hour window: when reached, every further " +
+    "call needs an explicit confirmation showing usage + reset time. Input " +
+    "over the character cap is refused outright. Anti-runaway design: each " +
+    "AI request fires only from its own button click — asking about many " +
+    "words means clicking per word; there is no bulk-translate loop.",
+  ));
+
+  /* ---- prompt template ---- */
+  modal.appendChild(h3El("Prompt template"));
+  const tplTa = document.createElement("textarea");
+  tplTa.className = "ai-template";
+  tplTa.rows = 8;
+  tplTa.spellcheck = false;
+  tplTa.value = loadTemplate();
+  const tplField = document.createElement("div");
+  tplField.className = "ai-field ai-field-template";
+  tplField.appendChild(labelFor("Template (editable)", tplTa));
+  modal.appendChild(tplField);
+  modal.appendChild(pEl(
+    "ai-hint",
+    `Placeholders: ${TEMPLATE_PLACEHOLDERS.join(", ")}. Every request ` +
+    `appends: "${DATA_NOTE}"`,
+  ));
+
+  /* ---- status + buttons ---- */
+  const status = pEl("ai-status", "");
   status.setAttribute("aria-live", "polite");
 
+  const testBtn = btnEl("ai-secondary", "Test Connection");
+  const saveBtn = btnEl("ai-primary", "Save");
+  const closeBtn = btnEl("ai-secondary", "Close");
   const btnRow = document.createElement("div");
   btnRow.className = "ai-btn-row";
-
-  const testBtn = document.createElement("button");
-  testBtn.className = "ai-secondary";
-  testBtn.textContent = "Test Connection";
-
-  const saveBtn = document.createElement("button");
-  saveBtn.className = "ai-primary";
-  saveBtn.textContent = "Save";
-
-  const closeBtn = document.createElement("button");
-  closeBtn.className = "ai-secondary";
-  closeBtn.textContent = "Close";
-
   btnRow.append(testBtn, saveBtn, closeBtn);
   modal.append(status, btnRow);
   backdrop.appendChild(modal);
   document.body.appendChild(backdrop);
 
   if (opts.hint) {
-    status.className = "ai-status";
     status.textContent = opts.hint;
+    status.classList.add("ai-ok");
   }
 
+  /* ---- profile switching / CRUD ---- */
+  const refreshPicker = (): void => {
+    const st = loadProfiles();
+    profileSel.replaceChildren();
+    for (const p of st.profiles) {
+      const o = document.createElement("option");
+      o.value = p.id;
+      const mark = p.id === st.defaultId ? " ★" : "";
+      o.textContent = `${p.name}${mark}`;
+      profileSel.appendChild(o);
+    }
+    if (!st.profiles.find((p) => p.id === editingId)) {
+      editingId = st.profiles[0]?.id;
+    }
+    if (editingId) profileSel.value = editingId;
+    loadIntoForm();
+  };
+
+  const currentProfile = (): Profile =>
+    loadProfiles().profiles.find((p) => p.id === editingId) ??
+    loadProfiles().profiles[0];
+
+  function loadIntoForm(): void {
+    const p = currentProfile();
+    if (!p) return;
+    nameInp.value = p.name;
+    protoSel.value = p.protocol;
+    baseUrlInp.value = p.baseUrl;
+    keyInp.value = p.apiKey;
+    modelInp.value = p.model;
+    effSel.value = p.effort ?? "";
+  }
+
+  function formToProfile(): Profile {
+    const prev = currentProfile();
+    const protocol = (PROTOCOLS.includes(protoSel.value as Protocol)
+      ? protoSel.value : "openai") as Protocol;
+    return {
+      id: prev?.id ?? newId(),
+      name: nameInp.value.trim() || protocol,
+      protocol,
+      baseUrl: baseUrlInp.value.trim(),
+      apiKey: keyInp.value,
+      model: modelInp.value.trim(),
+      effort: effSel.value as Effort,
+    };
+  }
+
+  profileSel.addEventListener("change", () => {
+    // persist edits of the previous profile before switching
+    commitEdits(false);
+    editingId = profileSel.value;
+    loadIntoForm();
+  });
+
+  function commitEdits(switchAfter: boolean): void {
+    const st = loadProfiles();
+    const edited = formToProfile();
+    const idx = st.profiles.findIndex((p) => p.id === edited.id);
+    if (idx >= 0) st.profiles[idx] = edited;
+    else st.profiles.push(edited);
+    saveProfiles(st.profiles, st.defaultId);
+    if (switchAfter && edited.id === readActiveId()) setActiveProfile(edited.id);
+  }
+
+  const readActiveId = (): string | undefined => {
+    try {
+      return JSON.parse(localStorage.getItem("greek-reader.llm") ?? "{}")
+        .activeProfileId as string | undefined;
+    } catch {
+      return undefined;
+    }
+  };
+
+  newBtn.addEventListener("click", () => {
+    commitEdits(false);
+    const st = loadProfiles();
+    const p = newDefaultProfile("openai");
+    p.name = `Profile ${st.profiles.length + 1}`;
+    st.profiles.push(p);
+    saveProfiles(st.profiles, st.defaultId);
+    editingId = p.id;
+    refreshPicker();
+    status.textContent = "Profile created.";
+    status.classList.remove("ai-error");
+  });
+
+  delBtn.addEventListener("click", () => {
+    const st = loadProfiles();
+    if (st.profiles.length <= 1) {
+      status.textContent = "Cannot delete the last profile.";
+      status.classList.add("ai-error");
+      return;
+    }
+    const rest = st.profiles.filter((p) => p.id !== editingId);
+    const defaultId =
+      st.defaultId === editingId ? rest[0].id : st.defaultId;
+    saveProfiles(rest, defaultId);
+    if (readActiveId() === editingId) setActiveProfile(rest[0].id);
+    editingId = rest[0].id;
+    refreshPicker();
+    status.textContent = "Profile deleted.";
+    status.classList.remove("ai-error");
+  });
+
+  defBtn.addEventListener("click", () => {
+    const st = loadProfiles();
+    if (!st.profiles.find((p) => p.id === editingId)) return;
+    saveProfiles(st.profiles, editingId);
+    refreshPicker();
+    status.textContent = "Default profile updated.";
+    status.classList.remove("ai-error");
+  });
+
+  /* ---- close/save/test ---- */
   const close = (): void => {
     backdrop.remove();
     modalOpen = false;
@@ -143,99 +317,140 @@ export function openSettings(opts: SettingsOptions = {}): void {
   });
   closeBtn.addEventListener("click", close);
 
-  const readForm = (): LlmConfig => {
-    const tRaw = fields.temperature.value.trim();
-    const temp = tRaw === "" ? undefined : Number(tRaw);
-    return {
-      baseUrl: fields.baseUrl.value.trim() || DEFAULT_BASE_URL,
-      apiKey: fields.apiKey.value,
-      model: fields.model.value.trim(),
-      temperature: temp !== undefined && Number.isFinite(temp) ? temp : undefined,
-      template: fields.template.value,
-    };
+  const validate = (): string | null => {
+    if (!formToProfile().model) return "Model name is required.";
+    if (!baseUrlInp.value.trim().startsWith("https://")) {
+      return "Base URL must start with https:// (the relay rejects other schemes).";
+    }
+    return null;
   };
 
   saveBtn.addEventListener("click", () => {
-    const form = readForm();
-    if (!form.model) {
+    const err = validate();
+    if (err) {
+      status.textContent = err;
       status.className = "ai-status ai-error";
-      status.textContent = "Model name is required.";
       return;
     }
     try {
-      saveConfig(form); // localStorage only
+      commitEdits(true);
+      saveCaps({
+        maxCallsPerHour: Number(callsInp.value) || CAP_LIMITS.defaultCalls,
+        maxInputChars: Number(charsInp.value) || CAP_LIMITS.defaultChars,
+      });
+      saveTemplate(tplTa.value);
+      status.textContent = "Saved to this browser (localStorage).";
+      status.className = "ai-status ai-ok";
     } catch (e) {
-      status.className = "ai-status ai-error";
       status.textContent = `Could not save: ${(e as Error).message}`;
-      return;
+      status.className = "ai-status ai-error";
     }
-    status.className = "ai-status ai-ok";
-    status.textContent = "Saved to this browser (localStorage).";
   });
 
   testBtn.addEventListener("click", () => {
-    const form = readForm();
-    if (!form.model) {
+    const err = validate();
+    if (err) {
+      status.textContent = err;
       status.className = "ai-status ai-error";
-      status.textContent = "Model name is required.";
       return;
     }
-    // Test against the FORM values so unsaved edits can be verified first.
     testBtn.disabled = true;
-    status.className = "ai-status";
     status.textContent = "Testing…";
+    status.className = "ai-status";
     const started = Date.now();
-    callLLM([{ role: "user", content: "Reply with the single word: OK" }], {
-      configOverride: form,
-    })
+    callLLM(
+      { system: "Reply with the single word: OK", user: "ping" },
+      { profileOverride: { ...formToProfile(), effort: "" } },
+    )
       .then((text) => {
         const ms = ((Date.now() - started) / 1000).toFixed(1);
-        status.className = "ai-status ai-ok";
         status.textContent =
-          `OK (${ms}s) — model replied: ${text.trim().slice(0, 80) || "(empty)"}`;
+          `OK (${ms}s) — replied: ${text.trim().slice(0, 80) || "(empty)"}`;
+        status.className = "ai-status ai-ok";
       })
-      .catch((err: Error) => {
+      .catch((e: Error) => {
+        status.textContent = `Failed: ${e.message}`;
         status.className = "ai-status ai-error";
-        status.textContent = `Failed: ${err.message}`;
       })
       .finally(() => {
         testBtn.disabled = false;
       });
   });
 
-  fields.apiKey.focus();
+  refreshPicker();
+  keyInp.focus();
 }
 
-/* ---------------- field builders ---------------- */
+/* ---------------- small builders ---------------- */
+
+function h2El(text: string): HTMLHeadingElement {
+  const el = document.createElement("h2");
+  el.textContent = text;
+  return el;
+}
+function h3El(text: string): HTMLHeadingElement {
+  const el = document.createElement("h3");
+  el.textContent = text;
+  return el;
+}
+function pEl(cls: string, text: string): HTMLParagraphElement {
+  const el = document.createElement("p");
+  el.className = cls;
+  el.textContent = text;
+  return el;
+}
+function btnEl(cls: string, text: string): HTMLButtonElement {
+  const el = document.createElement("button");
+  el.className = cls;
+  el.type = "button";
+  el.textContent = text;
+  return el;
+}
 
 function labelFor(text: string, control: HTMLElement): HTMLLabelElement {
   const lab = document.createElement("label");
   lab.className = "ai-label";
   const span = document.createElement("span");
   span.textContent = text;
-  lab.appendChild(span);
-  lab.appendChild(control);
+  lab.append(span, control);
   return lab;
 }
 
-function inputField(labelText: string, value: string): HTMLInputElement {
+function wrapField(control: HTMLElement, labelText: string): HTMLElement {
   const wrap = document.createElement("div");
   wrap.className = "ai-field";
+  wrap.appendChild(labelFor(labelText, control));
+  return wrap;
+}
+
+function inputField(labelText: string, placeholder = ""): HTMLInputElement {
   const inp = document.createElement("input");
-  inp.value = value;
   inp.spellcheck = false;
-  wrap.appendChild(labelFor(labelText, inp));
+  if (placeholder) inp.placeholder = placeholder;
+  wrapField(inp, labelText);
   return inp;
 }
 
-function promptField(value: string): HTMLTextAreaElement {
-  const wrap = document.createElement("div");
-  wrap.className = "ai-field ai-field-template";
-  const ta = document.createElement("textarea");
-  ta.value = value;
-  ta.rows = 8;
-  ta.spellcheck = false;
-  ta.className = "ai-template";
-  wrap.appendChild(labelFor("Prompt template", ta));
-  return ta;
+function numberInput(labelText: string, value: string): HTMLInputElement {
+  const inp = document.createElement("input");
+  inp.type = "number";
+  inp.value = value;
+  wrapField(inp, labelText);
+  return inp;
+}
+
+function selectField(
+  labelText: string,
+  options: Array<{ v: string; label: string }>,
+): HTMLSelectElement {
+  const sel = document.createElement("select");
+  sel.className = "ai-select";
+  for (const o of options) {
+    const opt = document.createElement("option");
+    opt.value = o.v;
+    opt.textContent = o.label;
+    sel.appendChild(opt);
+  }
+  wrapField(sel, labelText);
+  return sel;
 }

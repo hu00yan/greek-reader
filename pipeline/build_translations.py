@@ -482,6 +482,7 @@ def parse_brenton() -> dict[str, dict[int, dict[int, str]]]:
             ch, ve = int(m.group(1)), int(m.group(2))
             body = re.sub(r"<f\b.*?</f>", " ", m.group(3), flags=re.S)
             body = re.sub(r"<note\b.*?</note>", " ", body, flags=re.S)
+            body = re.sub(r"<x\b.*?</x>", " ", body, flags=re.S)  # cross-refs
             text = _clean_text(re.sub(r"<[^>]+>", " ", body))
             if text:
                 b.setdefault(ch, {})[ve] = text
