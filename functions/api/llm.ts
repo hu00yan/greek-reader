@@ -234,10 +234,7 @@ export async function onRequestPost(ctx: Ctx): Promise<Response> {
   const apiKey = typeof body.apiKey === "string" ? body.apiKey : ""; // never logged/stored (S5)
   const model = typeof body.model === "string" ? body.model.trim() : "";
   const stream = body.stream === true;
-  const temperature =
-    typeof body.temperature === "number" && Number.isFinite(body.temperature)
-      ? body.temperature
-      : undefined;
+  const effort = typeof body.effort === "string" ? body.effort : undefined;
   const maxTokens =
     typeof body.maxTokens === "number" && Number.isFinite(body.maxTokens)
       ? body.maxTokens
@@ -305,7 +302,7 @@ export async function onRequestPost(ctx: Ctx): Promise<Response> {
       method: "POST",
       headers: buildUpstreamHeaders(protocol, apiKey),
       body: JSON.stringify(
-        buildUpstreamBody(protocol, model, messages as RelayMessage[], stream, temperature, maxTokens),
+        buildUpstreamBody(protocol, model, messages as RelayMessage[], stream, effort, maxTokens),
       ),
       redirect: "error", // S3: refuse redirects
       cache: "no-store", // S5: nothing cached anywhere

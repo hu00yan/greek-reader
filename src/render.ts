@@ -3,6 +3,7 @@
 import { loadGloss, loadMorph, stripAccents, type Gloss, type Parse, type Unit } from "./api";
 import { openLexicon, lexiconButton } from "./lexicon";
 import { themeControl } from "./theme";
+import { speakGreek, stopTTS, pauseTTS, resumeTTS, speakQueue, onTTSStatus, getTTSStatus } from "./tts";
 
 type El = HTMLElement;
 const el = (tag: string, cls?: string, text?: string): El => {
@@ -341,6 +342,28 @@ function parseCard(p: Parse, ctx: RenderCtx, col: El): void {
  *  kind "prose": ref badge + flowing paragraph of words, cards beneath.
  *  baseIndex: cumulative unit offset (prose refs show every 5th chunk).
  *  Refs render VERBATIM — Stephanus/Bekker/book.line strings as shipped. */
+function ttsButtonForUnit(unit: Unit): El {
+  const b = el("button", "tts-unit-btn", "🔊") as HTMLButtonElement;
+  b.type = "button";
+  b.title = "Hear in Ancient Greek (espeak-ng grc, reconstructed)";
+  b.setAttribute("aria-label", `Speak ${unit.ref || "unit"} in Ancient Greek`);
+  b.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const text = unit.words.join(" ");
+    if (!text.trim()) return;
+    // visual feedback
+    b.disabled = true;
+    b.textContent = "⏳";
+    void speakGreek(text).catch(() => {
+      // error handled via status; restore
+    }).finally(() => {
+      b.disabled = false;
+      b.textContent = "🔊";
+    });
+  });
+  return b;
+}
+
 export function renderUnits(
   container: El,
   units: Unit[],
@@ -357,6 +380,8 @@ export function renderUnits(
       if (unit.ref && (baseIndex + uIdx) % 5 === 0) {
         head.appendChild(el("span", "ref-badge", unit.ref));
       }
+      // per-unit TTS button next to ref badge (always, even when ref hidden we still add for that unit)
+      head.appendChild(ttsButtonForUnit(unit));
       row.appendChild(head);
     }
     const greek = el("div", "greek-line");
@@ -367,6 +392,9 @@ export function renderUnits(
       const refLabel = el("span", "ref-label", unit.ref);
       refLabel.title = `ref ${unit.ref}`;
       greek.appendChild(refLabel);
+      greek.appendChild(ttsButtonForUnit(unit));
+    } else if (kind === "verse") {
+      greek.appendChild(ttsButtonForUnit(unit));
     }
 
     // unit-initial person name => speaker label (v1: leading tokens only)
@@ -638,6 +666,93 @@ export function renderControls(crumbsText: string, onBack: () => void): Controls
   colAll.addEventListener("click", collapseAll);
   bar.appendChild(expAll);
   bar.appendChild(colAll);
+
+  // --- TTS global Play/Pause (espeak-ng grc) ---
+  const ttsStatus = el("span", "tts-status");
+  ttsStatus.setAttribute("aria-live", "polite");
+  const playAll = el("button", undefined, "▶ Play") as HTMLButtonElement;
+  playAll.type = "button";
+  playAll.title = "Play all visible Greek (espeak-ng grc, reconstr. ancient)";
+  const pauseBtn = el("button", undefined, "⏸ Pause") as HTMLButtonElement;
+  pauseBtn.type = "button";
+  pauseBtn.title = "Pause TTS";
+  const stopBtn = el("button", undefined, "⏹ Stop") as HTMLButtonElement;
+  stopBtn.type = "button";
+  stopBtn.title = "Stop TTS";
+  pauseBtn.disabled = true;
+  stopBtn.disabled = true;
+  const updateTTSButtons = (): void => {
+    const s = getTTSStatus();
+    if (s === "playing") {
+      playAll.textContent = "⏸ Pause";
+      pauseBtn.disabled = false;
+      stopBtn.disabled = false;
+      ttsStatus.textContent = "playing…";
+    } else if (s === "paused") {
+      playAll.textContent = "▶ Resume";
+      pauseBtn.disabled = true;
+      stopBtn.disabled = false;
+      ttsStatus.textContent = "paused";
+    } else if (s === "loading") {
+      playAll.textContent = "⏳ Loading";
+      pauseBtn.disabled = true;
+      stopBtn.disabled = false;
+      ttsStatus.textContent = "loading voice…";
+    } else if (s === "fallback") {
+      playAll.textContent = "▶ Play";
+      pauseBtn.disabled = true;
+      stopBtn.disabled = false;
+      ttsStatus.textContent = "modern approx.";
+      ttsStatus.title = "espeak-ng grc unavailable — using Web Speech modern Greek approximation";
+    } else if (s === "error") {
+      playAll.textContent = "▶ Play";
+      pauseBtn.disabled = true;
+      stopBtn.disabled = true;
+      ttsStatus.textContent = "TTS error";
+    } else {
+      playAll.textContent = "▶ Play";
+      pauseBtn.disabled = true;
+      stopBtn.disabled = true;
+      ttsStatus.textContent = "";
+      ttsStatus.title = "";
+    }
+  };
+  onTTSStatus((s, msg) => {
+    if (s === "fallback" && msg) {
+      ttsStatus.textContent = "modern approx.";
+      ttsStatus.title = msg;
+    } else if (s === "error" && msg) {
+      ttsStatus.textContent = msg.slice(0, 40);
+    }
+    updateTTSButtons();
+  });
+  playAll.addEventListener("click", () => {
+    const s = getTTSStatus();
+    if (s === "playing") { pauseTTS(); return; }
+    if (s === "paused") { resumeTTS(); return; }
+    // collect visible Greek units
+    const rows = Array.from(document.querySelectorAll<HTMLElement>(".line, .prose-unit"));
+    const texts: string[] = [];
+    for (const r of rows) {
+      const ws = Array.from(r.querySelectorAll<HTMLElement>(".w"))
+        .map((n) => n.textContent ?? "")
+        .filter(Boolean)
+        .join(" ")
+        .trim();
+      if (ws) texts.push(ws);
+    }
+    if (!texts.length) {
+      ttsStatus.textContent = "No Greek to speak";
+      return;
+    }
+    void speakQueue(texts).catch(() => {});
+  });
+  pauseBtn.addEventListener("click", () => pauseTTS());
+  stopBtn.addEventListener("click", () => stopTTS());
+  bar.appendChild(playAll);
+  bar.appendChild(pauseBtn);
+  bar.appendChild(stopBtn);
+  bar.appendChild(ttsStatus);
 
   bar.appendChild(lexiconButton());
 

@@ -15,6 +15,7 @@ import { lexiconButton } from "./lexicon";
 import { initPaste } from "./paste";
 import { renderAbout, aboutLink } from "./about";
 import { initLLM } from "./llm-panel";
+import { initPWA } from "./pwa";
 import { renderHome } from "./home";
 
 const app = document.getElementById("app") as HTMLElement;
@@ -277,6 +278,7 @@ async function turnPage(
 
 window.addEventListener("hashchange", () => go(location.hash));
 initLLM(); // gear button + AI assist hooks (see llm-panel.ts)
+initPWA(); // service worker + offline badge (see pwa.ts)
 // floating Lexicon trigger: guarantees the drawer on every route,
 // including paste (whose page module is not owned by the UI round)
 const lexFab = lexiconButton("Lexicon");

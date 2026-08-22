@@ -11,3 +11,6 @@ qa-report/
 DEPLOY_URL.txt
 .cache-trans/
 .tmp-review
+public/espeak-ng.wasm
+public/espeak-ng.wasm.br
+public/espeak-ng.wasm.gz

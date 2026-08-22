@@ -437,6 +437,34 @@ textarea {
 .load-more:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
 .load-more:disabled { opacity: 0.55; cursor: default; }
 
+/* ---- TTS ---- */
+.tts-unit-btn {
+  display: inline-block;
+  margin-left: 0.35rem;
+  padding: 0.08rem 0.35rem;
+  font: inherit;
+  font-size: 0.72rem;
+  line-height: 1;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel-bg);
+  color: var(--muted);
+  cursor: pointer;
+  vertical-align: middle;
+}
+.tts-unit-btn:hover { border-color: var(--accent); color: var(--accent); }
+.tts-unit-btn:disabled { opacity: 0.6; cursor: default; }
+.tts-status {
+  font-size: 0.72rem;
+  color: var(--muted);
+  font-family: ui-monospace, Menlo, monospace;
+  max-width: 8rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.prose-head { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+
 /* ---- prose units + refs ---- */
 .prose-unit .greek-line { line-height: 1.8; }
 .ref-label {
@@ -806,3 +834,60 @@ textarea {
 .about-p { max-width: 46rem; line-height: 1.6; }
 .about-list { max-width: 46rem; padding-left: 1.2rem; }
 .about-list li { margin: 0.45rem 0; line-height: 1.55; }
+
+/* ---- LLM round1 additions: profile pill, selects, confirm modal ---- */
+.ai-gear-wrap {
+  position: fixed;
+  top: 0.6rem;
+  right: 0.6rem;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.ai-gear-wrap .ai-gear { position: static; }
+.ai-profile-select {
+  font: inherit;
+  font-size: 0.78rem;
+  max-width: min(14rem, 42vw);
+  padding: 0.22rem 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+}
+.ai-select {
+  width: 100%;
+  max-width: 100%;
+  font: inherit;
+  font-size: 0.9rem;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+}
+.ai-modal h3 {
+  margin: 1.1rem 0 0.25rem;
+  font-size: 0.95rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.ai-modal-confirm { width: min(20rem, 100%); }
+.ai-profile-row { display: flex; gap: 0.4rem; flex-wrap: wrap; }
+.ai-profile-row .ai-select { flex: 1 1 auto; }
+
+/* ---- PWA offline badge ---- */
+.offline-badge {
+  position: fixed;
+  left: 0.6rem;
+  bottom: 0.6rem;
+  z-index: 15;
+  padding: 0.25rem 0.7rem;
+  border-radius: 999px;
+  border: 1px solid #b08d3f;
+  background: #fdf6e4;
+  color: #7a5b16;
+  font-size: 0.78rem;
+}

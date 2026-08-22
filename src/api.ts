@@ -69,8 +69,20 @@ export function loadCatalog(): Promise<Catalog> {
   return fetchJSON<Catalog>("data/catalog.json");
 }
 
+/**
+ * Load a work part. Accepts BOTH unit shapes (dist-slimming):
+ *   {ref, words: string[]}   (source/pipeline shape)
+ *   {ref, w: "a b c"}        (postbuild compacted shape)
+ */
 export function loadPart(relPath: string): Promise<WorkPart> {
-  return fetchJSON<WorkPart>(`data/${relPath}`);
+  return fetchJSON<WorkPart>(`data/${relPath}`).then((part) => {
+    for (const u of part.units as unknown as Array<Record<string, unknown>>) {
+      if (typeof u.w === "string" && !Array.isArray(u.words)) {
+        u.words = (u.w as string).split(" ").filter(Boolean);
+      }
+    }
+    return part;
+  });
 }
 
 /**

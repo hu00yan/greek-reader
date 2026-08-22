@@ -1,0 +1,30 @@
+{
+  "name": "Greek Reader",
+  "short_name": "Greek Reader",
+  "description": "An interlinear reading environment for Ancient Greek — morphology by Morpheus, glosses from LSJ.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#fdfcfa",
+  "theme_color": "#2456a6",
+  "icons": [
+    {
+      "src": "icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

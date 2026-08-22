@@ -92,7 +92,11 @@ export function renderAbout(app: HTMLElement): void {
     "no server, database or tracker: any static host works. An optional " +
     "Cloudflare Pages Function passes live morphology queries through to " +
     "the Tufts service, and a bring-your-own-key LLM relay keeps API keys " +
-    "client-side.",
+    "client-side. Offline TTS is on-device via espeak-ng WASM (grc voice, " +
+    "reconstructed Ancient Greek; robotic but not modern) — per-line 🔊 " +
+    "buttons and a global Play/Pause/Stop bar; the WASM is bundled in " +
+    "public/dist and cached by the service worker, with a clearly labelled " +
+    "modern-Greek Web Speech fallback only if grc is unavailable.",
   ));
 
   app.appendChild(h2("Acknowledgments"));

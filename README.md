@@ -23,6 +23,13 @@ under every single word — entirely from static JSON, with no backend.
   parse).
 - **Reader controls** — show/hide glosses, A− / A+ text sizing, "Load more"
   pagination over ≤1 MB part files.
+- **Ancient Greek TTS** — offline, on-device speech via espeak-ng WASM with the
+  `grc` (Ancient Greek, reconstructed pronunciation) voice — robotic but
+  faithful, never modern Greek. Per-line 🔊 buttons next to every ref plus a
+  global ▶ Play / ⏸ Pause / ⏹ Stop bar; the WASM (`espeak-ng.wasm`, ~18 MB) is
+  bundled in `public/`/`dist` and cached by the service worker. If the WASM
+  or `grc` voice is unavailable, it falls back to the Web Speech API's modern
+  Greek voice and is clearly labelled as a *modern approximation*.
 - **Static JSON shards** — morphology and glosses are alphabet-sharded JSON
   files fetched lazily per page; texts load part-by-part as you read. No
   server, no database: any static host works.
