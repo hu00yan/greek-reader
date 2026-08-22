@@ -1,0 +1,116 @@
+{
+ "authors": [
+  {
+   "name": "Homer",
+   "tlg": "tlg0012",
+   "works": [
+    {
+     "id": "iliad",
+     "title": "Iliad",
+     "urn": "urn:cts:greekLit:tlg0012.tlg001.perseus-grc2",
+     "license": "CC BY-SA 3.0 (Perseus Digital Library)",
+     "files": [
+      "texts/tlg0012/iliad-part01.json",
+      "texts/tlg0012/iliad-part02.json",
+      "texts/tlg0012/iliad-part03.json",
+      "texts/tlg0012/iliad-part04.json",
+      "texts/tlg0012/iliad-part05.json"
+     ],
+     "unitCount": 611
+    }
+   ]
+  },
+  {
+   "name": "Hesiod",
+   "tlg": "tlg0020",
+   "works": [
+    {
+     "id": "theogony",
+     "title": "Theogony",
+     "urn": "urn:cts:greekLit:tlg0020.tlg001.perseus-grc2",
+     "license": "CC BY-SA 3.0 (Perseus Digital Library)",
+     "files": [
+      "texts/tlg0020/theogony-part01.json"
+     ],
+     "unitCount": 120
+    }
+   ]
+  },
+  {
+   "name": "Plato",
+   "tlg": "tlg0059",
+   "works": [
+    {
+     "id": "apology",
+     "title": "Apology",
+     "urn": "urn:cts:greekLit:tlg0059.tlg002.perseus-grc2",
+     "license": "CC BY-SA 3.0 (Perseus Digital Library)",
+     "files": [
+      "texts/tlg0059/apology-part01.json",
+      "texts/tlg0059/apology-part02.json"
+     ],
+     "unitCount": 252
+    }
+   ]
+  },
+  {
+   "name": "Plutarch",
+   "tlg": "tlg0007",
+   "works": [
+    {
+     "id": "themistocles",
+     "title": "Life of Themistocles",
+     "urn": "urn:cts:greekLit:tlg0007.tlg010.perseus-grc2",
+     "license": "CC BY-SA 3.0 (Perseus Digital Library)",
+     "files": [
+      "texts/tlg0007/themistocles-part01.json"
+     ],
+     "unitCount": 46
+    }
+   ]
+  },
+  {
+   "name": "Herodotus",
+   "tlg": "tlg0010",
+   "works": [
+    {
+     "id": "histories",
+     "title": "Histories (Book 1)",
+     "urn": "urn:cts:greekLit:tlg0010.tlg001.perseus-grc2",
+     "license": "CC BY-SA 3.0 (Perseus Digital Library)",
+     "files": [
+      "texts/tlg0010/histories-part01.json"
+     ],
+     "unitCount": 35
+    }
+   ]
+  },
+  {
+   "name": "New Testament",
+   "tlg": "tlg0031",
+   "works": [
+    {
+     "id": "mark",
+     "title": "Mark",
+     "urn": "urn:cts:greekLit:tlg0031.tlg002.perseus-grc2",
+     "license": "CC BY-SA 3.0 (Perseus Digital Library)",
+     "files": [
+      "texts/tlg0031/mark-part01.json"
+     ],
+     "unitCount": 149
+    },
+    {
+     "id": "john",
+     "title": "John",
+     "urn": "urn:cts:greekLit:tlg0031.tlg004.perseus-grc2",
+     "license": "CC BY-SA 3.0 (Perseus Digital Library)",
+     "files": [
+      "texts/tlg0031/john-part01.json",
+      "texts/tlg0031/john-part02.json"
+     ],
+     "unitCount": 166
+    }
+   ]
+  }
+ ]
+}
