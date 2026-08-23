@@ -19,15 +19,15 @@ npx vite build --base=/greek-reader/
 
 ## Platform notes & exact commands
 
-### 1. Cloudflare Pages (preferred)
+### 1. Cloudflare Pages — SOLE PRODUCTION TARGET
 Requires `wrangler` auth: `npx wrangler login` (or `CLOUDFLARE_API_TOKEN` env var).
 
 ```bash
-# one-time
-npx wrangler pages project create greek-reader --production-branch main
+# one-time (already done)
+npx wrangler pages project create interlinear-greek --production-branch main
 
-# every deploy (from repo root; functions/, if present, ship automatically)
-npx wrangler pages deploy . --project-name greek-reader
+# every deploy (from repo root; config-driven assets = dist/, functions/ ship)
+npx wrangler pages deploy --commit-dirty=true
 ```
 
 `wrangler.toml` in repo root pins the output dir so static assets + Functions deploy together:
@@ -37,21 +37,31 @@ name = "greek-reader"
 pages_build_output_dir = "dist"
 ```
 
-URL: `https://interlinear-greek.pages.dev`
+URL: **`https://interlinear-greek.pages.dev`** (production)
 
 > If deploying only raw `dist/`, any `functions/api/*.ts` endpoints will NOT be included —
-> always deploy the project root as above.
+> always deploy from repo root as above. Do NOT pass a positional directory:
+> `wrangler pages deploy .` repo-root-scans caches (.cache-trans >25MiB) and fails.
 
-### 2. Vercel
-Requires `vercel` auth: `npx vercel login` (or `VERCEL_TOKEN`).
+### 2. Vercel (dormant — ready but not deployed)
+Project already linked via `.vercel/project.json`
+(`greek-reader`, team `hu00yans-projects`). Nothing currently auto-deploys;
+the last production deployment (`https://greek-reader.vercel.app`) is
+OUTDATED/FROZEN — treat it as historical, not canonical.
+
+To revive at any time:
 
 ```bash
-npx vercel deploy dist --prod --yes
+npx -y vercel@latest login          # if token expired
+npx -y vercel@latest deploy dist --prod --yes
 ```
 
-URL is printed by the CLI (project default domain `<project>.vercel.app`).
-Note: deploying raw `dist/` excludes any `functions/` directory — the site runs in
-degraded-offline mode if API endpoints are absent.
+`vercel.json` at repo root pins build settings so `--prod` runs without prompts.
+CLI note: requires vercel CLI ≥ 47.2.2 (the `vercel.json` "outputDirectory"
+field). Caveat: `functions/api/*` are Cloudflare Pages Functions and will NOT
+run on Vercel — `/api/morph` & `/api/llm` degrade gracefully offline (the UI
+falls back to index-only morphology and hides AI features); all static reading
+features work unchanged.
 
 ### 3. GitHub Pages (interim / fallback)
 Always available using repo push credentials.
@@ -70,6 +80,8 @@ Note: no Functions support → degraded-offline mode if `functions/api/morph.ts`
 
 ## Status log
 
-- Auth checked at deploy time: Vercel ✔ (`hu00yan`), Cloudflare ✘ (not logged in),
-  GitHub push credentials ✔.
-- See final section of this file / commit history for what actually shipped.
+- 2026-08-23: Cloudflare Pages is the ONLY active target
+  (`https://interlinear-greek.pages.dev`). Vercel dormant-but-ready (see §2);
+  legacy `greek-reader.vercel.app` deployment frozen/outdated; legacy
+  `greek-reader-auv.pages.dev` project deleted.
+- Earlier status log entries kept in git history.
