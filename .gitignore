@@ -10,7 +10,20 @@ dist/
 qa-report/
 DEPLOY_URL.txt
 .cache-trans/
+.cache-prosody/
+.cache-dicts/
 .tmp-review
 public/espeak-ng.wasm
 public/espeak-ng.wasm.br
 public/espeak-ng.wasm.gz
+# secrets / env — never commit
+.env
+.env.*
+!.env.example
+.dev.vars
+.dev.vars.*
+.wrangler/
+wrangler.toml.bak
+
+.cache-fst/
+.cache-eval/

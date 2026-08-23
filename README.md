@@ -38,13 +38,41 @@ under every single word — entirely from static JSON, with no backend.
 
 ```sh
 npm install
-npm run dev        # dev server
+npm run dev        # dev server (Vite)
 npm run build      # production build → dist/
 npm run preview    # serve the production build locally
 ```
 
-The data files are committed under `public/data/`, so the built site works
-out of the box.
+The data files are committed under `public/data/`, so the built site works out of the box. No env vars or DB required.
+
+### Build steps (full rebuild)
+
+```sh
+python3 pipeline/make_manifest.py      # inventory sources → manifest.json (.cache-corpus/)
+python3 pipeline/fetch_sources.py      # download TEI → .cache-corpus/texts/
+python3 pipeline/build_corpus.py       # parse + Morpheus crunch → public/data/texts/ + morph/
+python3 pipeline/build_glosses.py      # LSJ → public/data/gloss/
+python3 pipeline/build_translations.py # public-domain EN → public/data/trans/ (.cache-trans/)
+python3 pipeline/build_dicts.py        # Autenrieth Homeric Dict. → public/data/dicts/ (.cache-dicts/)
+npm run build                          # Vite → dist/ (with .gz/.br precompression)
+```
+
+Morphology rebuild requires the locally patched Morpheus `cruncher` (see `third_party/morpheus-patches/`); other steps are stdlib-only Python.
+
+### Development method
+
+Pipeline-driven, spec-first: `pipeline/*.py` are the source of truth for corpus + morphology + glosses; `src/` is a thin static reader over the emitted JSON. Changes flow `pipeline → public/data/ → Vite → dist/`. No backend, no mocks — tests (Playwright) run against static files. Forks keep `public/data/` licenses intact and preserve CC BY-SA attribution.
+
+### Dependencies
+
+| package | version | license | function |
+| --- | --- | --- | --- |
+| `vite` | ^6.0.0 | MIT | dev server + build (Rollup + esbuild) |
+| `typescript` | ^5.6.0 | Apache-2.0 | static typing (compile-time only) |
+| `espeak-ng` | ^1.0.2 | GPL-3.0-or-later | offline TTS WASM `grc` voice (dynamic import, separate from code license) |
+| `playwright-core` | ^1.49.0 | Apache-2.0 | browser automation for interaction tests |
+
+Transitives via Vite: `esbuild` (MIT), `rollup` (MIT), `postcss` (MIT). All permissive and compatible with the project's dual MIT OR Apache-2.0 code license. The WASM (`public/espeak-ng.wasm`) is GPL-3.0-not-MIT/Apache (see `LICENSE`).
 
 ## Data pipeline
 
@@ -58,6 +86,7 @@ out of the box.
 | `build_corpus.py` | the corpus builder: parses both repos' TEI shapes into units (verse `<l>` lines; prose `<p>` split into ≤60-word chunks), batch-analyses every unique word form corpus-wide with the Morpheus `cruncher` (5k-form stdin chunks, echo-sync), and emits `public/data/catalog.json`, `public/data/texts/<tlg>/<work>-partNN.json` and `public/data/morph/{a–z}.json`. Files that fail parsing twice are logged to `pipeline/ingest-failures.md` and skipped |
 | `build_work.py` | legacy single-work builder (*Iliad* 1 prototype; superseded by `build_corpus.py`) |
 | `build_glosses.py` | extracts headword + first level-1 sense per entry from the LSJ digitisation (`greatscott01–86.xml`, cached in `.cache-lsj/`), converts Beta Code headwords to Unicode, and emits `public/data/gloss/{a–z}.json` |
+| `build_dicts.py` | builds the specialised per-author dictionaries under `public/data/dicts/`: walks the Perseus Hopper entry chain for **Autenrieth's Homeric Dictionary** (1891, public domain; Perseus:text:1999.04.0073) with rate-limited, disk-cached, resumable fetching (`.cache-dicts/`), then shards plain-text entries by letter. Slater's *Lexicon to Pindar* was evaluated and **skipped** — De Gruyter, 1969, still in copyright |
 
 Shard lookup key = `strip_accents(surface/lemma)`: lowercase, NFD, drop
 combining marks, final sigma ς → σ. Shard file = first letter of the
@@ -75,6 +104,9 @@ public/data/
   texts/<tlg>/<work>-partNN.json  # {id, author, title, kind, units:[{ref, words}]}
   morph/<letter>.json             # {strippedForm: [{l: lemma, p: pos, f: features, x: extras}]}
   gloss/<letter>.json             # {strippedLemma: {u: headword, g: LSJ gloss}}
+  dicts/<domain>/<letter>.json    # {strippedLemma: {u: lemma, g: entry text,
+                                  #  src: "autenrieth"}} — domain-scoped
+                                  #  specialised dictionaries (homer)
   trans/<workId>.json             # {workId, translator, year, license, source,
                                   #  alignment?, units:[{ref, text}]}
 ```
@@ -113,9 +145,7 @@ No environment variables or serverless functions are required.
 
 ## Sources & Licenses
 
-All code in this repository: **MIT** (see `LICENSE`). The data under
-`public/data/` derives from CC BY-SA sources listed below and is therefore
-distributed under the corresponding ShareAlike terms.
+All code in this repository: **dual MIT OR Apache-2.0 at your choice** (see `LICENSE`, `LICENSE-MIT`, `LICENSE-APACHE`; SPDX `MIT OR Apache-2.0`, Rust model). The data under `public/data/` is **not** MIT/Apache — it derives from CC BY-SA sources below and is distributed under corresponding ShareAlike terms, independent of the code license. See `LICENSE` § Data License Note.
 
 - **Morphological analysis** — [Morpheus](https://github.com/PerseusDL/morpheus),
   Perseus Digital Library, Tufts University. Licensed
@@ -131,6 +161,18 @@ distributed under the corresponding ShareAlike terms.
   and of the [Perseus Digital Library](https://www.perseus.tufts.edu),
   Tufts University, licensed CC BY-SA 3.0 US. We gratefully credit **both**
   Perseus (Tufts) and Helma Dik / Logeion as requested by the maintainers.
+
+- **Specialised dictionaries (`public/data/dicts/`)** — Georg Autenrieth,
+  *A Homeric Dictionary for Schools and Colleges*, trans. Robert P. Keep
+  (New York: Harper and Brothers, 1891). **Public domain** (author d. 1900,
+  translator d. 1904); digitised text served by the
+  [Perseus Digital Library](https://www.perseus.tufts.edu/hopper/text?doc=Perseus:text:1999.04.0073)
+  (Perseus:text:1999.04.0073), with thanks to Perseus (Tufts) for the
+  professional data entry. William J. Slater's *Lexicon to Pindar* was
+  considered for a `pindar` domain and **deliberately not included**: it is
+  De Gruyter 1969, still under active copyright (DOI
+  [10.1515/9783110839289](https://doi.org/10.1515/9783110839289)); no
+  public-domain machine-readable text exists.
 
 - **Greek text — classical corpus** — via
   [PerseusDL/canonical-greekLit](https://github.com/PerseusDL/canonical-greekLit)
@@ -167,16 +209,20 @@ distributed under the corresponding ShareAlike terms.
   Fowler's Plato, and the rest of the Perseus translation corpus. Only
   editions with imprint years ≤ 1929 are ingested; the TEI header supplies
   translator and year, recorded per work in `catalog.json`.
-- **New Testament (27 books)** — King James Version, 1769 standard text,
-  via the `aruljohn/Bible-kjv` JSON mirror.
-- **Septuagint (50+ books)** — Sir Lancelot C. L. Brenton's translation
-  (Samuel Bagster, London: 1844; Apocrypha incl. 1 Esdras, Wisdom, Sirach,
-  Maccabees, Daniel/Theodotion additions 1851), via eBible.org's USFX
-  edition of the public-domain text.
+- **New Testament (27 books)** — King James Version (KJV), 1769 standard text, public domain, via [`aruljohn/Bible-kjv`](https://github.com/aruljohn/Bible-kjv) JSON mirror.
+- **Septuagint (50+ books)** — Sir Lancelot C. L. Brenton's translation (Samuel Bagster, London 1844; Apocrypha incl. 1 Esdras, Wisdom, Sirach, Maccabees, Daniel/Theodotion additions 1851), public domain, via [eBible.org](https://ebible.org/find/show.php?id=engBrenton) USFX.
 - Where a prose translation's section chunking differs from the Greek, text
   is re-split proportionally and the file is marked `"alignment":"loose"`;
   line-level translations distributed from range-anchored prose (e.g.
   Murray's Homer) are likewise marked loose.
+
+### Reference & inspiration
+
+Early interlinear models that informed the UX (not data sources):
+
+- [nodictionaries.com](https://www.nodictionaries.com) — word-by-word gloss model.
+- [johnhboyer-sys/plato-reader](https://github.com/johnhboyer-sys/plato-reader) — minimal static Perseus morphology reader; informed the static-JSON/no-backend approach.
+- [scaife.perseus.org](https://scaife.perseus.org) (Scaife Viewer) — Perseus CTS/TEI reading environment; reference for CTS URNs and passage navigation.
 
 ## Acknowledgments
 

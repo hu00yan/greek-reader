@@ -1,31 +1,56 @@
-MIT License
+greek-reader — dual-licensed under MIT OR Apache-2.0, at your option.
+
+This project follows the Rust model: you may use, copy, modify, and
+distribute the CODE in this repository under either of the following
+licenses, at your choice:
+
+  - MIT License (LICENSE-MIT)
+  - Apache License, Version 2.0 (LICENSE-APACHE)
+
+SPDX-License-Identifier: MIT OR Apache-2.0
 
 Copyright (c) 2026 greek-reader contributors
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+You may choose either license. Contributions are accepted under the same
+dual terms (MIT OR Apache-2.0) unless you explicitly state otherwise.
 
 ---
 
-DATA LICENSE NOTE
+DATA LICENSE NOTE — SEPARATE FROM CODE
 
-The code of this repository is MIT-licensed. The data files under
-public/data/ are DERIVED WORKS of CC BY-SA licensed sources (LSJ via
-Logeion, Morpheus analyses, the Perseus Digital Library Greek texts) and
-inherit the Creative Commons Attribution-ShareAlike license of those
-sources — see README.md, section "Sources & Licenses", for full citations.
+The data files under public/data/ are DERIVED WORKS of CC BY-SA licensed
+sources and remain under their respective ShareAlike terms, independent of
+the code dual-license above. In particular:
+
+  - public/data/morph/  — derived from Morpheus analyses (CC BY-SA 3.0 US)
+  - public/data/gloss/  — derived from LSJ via Perseus + Logeion
+                          (CC BY-SA 3.0 US / CC BY-SA 4.0)
+  - public/data/texts/  — classical corpus via PerseusDL/canonical-greekLit
+                          (CC BY-SA 3.0) and Septuagint/Philo via
+                          OpenGreekAndLatin/First1KGreek (CC BY-SA 4.0)
+  - public/data/trans/  — classical translations are public domain except
+                          where an upstream TEI header states otherwise
+  - public/data/dicts/  — Autenrieth, A Homeric Dictionary (Harper &
+                          Brothers, 1891): public domain; digitised text
+                          courtesy of the Perseus Digital Library
+
+See README.md § Sources & Licenses and src/about.ts for full citations.
+Data is not covered by MIT/Apache; you must comply with CC BY-SA
+ShareAlike when redistributing data shards.
+
+---
+
+THIRD-PARTY RUNTIME DEPENDENCY NOTE
+
+Build/runtime dependencies are permissively compatible with MIT OR
+Apache-2.0 and do not change the code license:
+
+  - vite (MIT), typescript (Apache-2.0), esbuild (MIT), rollup (MIT),
+    postcss (MIT), playwright-core (Apache-2.0)
+
+The optional offline TTS runtime espeak-ng (npm: espeak-ng, GPL-3.0-or-later)
+is dynamically loaded as a WASM artifact (public/espeak-ng.wasm, not
+committed; fetched/bundled via vite.config.ts). It is a separate
+program under GPL-3.0 and is NOT covered by the MIT/Apache dual license;
+if you distribute the WASM you must comply with GPL-3.0 for that artifact
+alone. The rest of the codebase remains MIT OR Apache-2.0.
