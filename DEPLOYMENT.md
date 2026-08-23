@@ -37,7 +37,7 @@ name = "greek-reader"
 pages_build_output_dir = "dist"
 ```
 
-URL: `https://greek-reader.pages.dev`
+URL: `https://interlinear-greek.pages.dev`
 
 > If deploying only raw `dist/`, any `functions/api/*.ts` endpoints will NOT be included —
 > always deploy the project root as above.
