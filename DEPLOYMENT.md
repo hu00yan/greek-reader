@@ -80,6 +80,18 @@ Note: no Functions support → degraded-offline mode if `functions/api/morph.ts`
 
 ## Status log
 
+- 2026-08-23 22:39 CST: Redeployed to Cloudflare Pages production
+  (`https://interlinear-greek.pages.dev`) from commit `174131f`. Build: vite +
+  postbuild brotli (~5.6 min; grc-only espeak wasm, search-index-grc.json
+  regenerated). Deployed via staging dir (dist contents at root + `functions/`)
+  — NOTE: `wrangler pages deploy .` from repo root is WRONG for this project:
+  it namespaces assets under `/dist/*`, `/public/*` and serves raw source
+  `index.html` at `/`. Correct procedure: copy `dist/.` + `functions/` into a
+  temp stage dir, then `npx wrangler pages deploy <stage> --project-name
+  interlinear-greek --branch main --commit-dirty=true`. Probes all passed:
+  homepage 200 (built bundle), catalog.json "Hosea / Lat. Osee",
+  /data/prosody/ion.json 200, /data/search-index-grc.json valid JSON,
+  POST /api/llm {} → 400 validation, manifest.webmanifest 200.
 - 2026-08-23: Cloudflare Pages is the ONLY active target
   (`https://interlinear-greek.pages.dev`). Vercel dormant-but-ready (see §2);
   legacy `greek-reader.vercel.app` deployment frozen/outdated; legacy
