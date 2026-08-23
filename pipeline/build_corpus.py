@@ -72,12 +72,57 @@ STEPH_AUTHORS = {"tlg0059", "tlg0007"}
 # tokenising (identical semantics to build_work.py) + Greek filter
 
 
+def _sanitize_sigma_word(w: str) -> str:
+    """Strip stray ς not at word end and hyphen artifacts (morph glue hygiene)."""
+    raw = w.strip("-")
+    if "-" in raw:
+        raw = raw.split("-")[0].strip("-")
+    raw = raw.replace("ς-", "σ")
+    if "ς" in raw:
+        if raw.endswith("ς"):
+            raw = raw[:-1].replace("ς", "σ") + "ς"
+        else:
+            raw = raw.replace("ς", "σ")
+    raw = raw.strip("-")
+    if raw.endswith("ςς"):
+        raw = raw.rstrip("ς") + "ς"
+        if "ς" in raw[:-1]:
+            raw = raw[:-1].replace("ς", "σ") + "ς"
+    return raw
+
+
 def tokenize(text: str) -> list[str]:
     text = text.replace("\u02bc", "'").replace("\u2019", "'")
+    # split internal punctuation that should be word boundaries (em dash, etc.)
+    # keep apostrophe for elision (δ' etc.)
+    for ch in "—–·«»()[]‹›…—?!“”„‘’\"*_.,;:":
+        text = text.replace(ch, " ")
     words = []
     for raw in text.split():
-        tok = raw.strip(PUNCT).strip()
-        if tok:
+        orig_tok = raw.strip(PUNCT).strip()
+        if not orig_tok:
+            continue
+        tok = _sanitize_sigma_word(orig_tok)
+        if not tok:
+            continue
+        # fused token split: if original had medial ς and was long pure Greek,
+        # split into two words at that boundary (e.g. οὔδεοςπίλναται)
+        if "ς" in orig_tok and not orig_tok.endswith("ς") and len(orig_tok) >= 10 and GREEK_RE.search(orig_tok):
+            # find first medial ς position
+            for idx, ch in enumerate(orig_tok):
+                if ch == "ς" and idx != len(orig_tok) - 1:
+                    # split sanitized at same index (sanitized has σ there)
+                    first = tok[:idx+1]
+                    if first.endswith("σ"):
+                        first = first[:-1] + "ς"
+                    second = tok[idx+1:]
+                    if len(first) >= 3 and len(second) >= 3:
+                        words.append(first)
+                        words.append(second)
+                        break
+            else:
+                words.append(tok)
+        else:
             words.append(tok)
     return words
 
@@ -85,7 +130,20 @@ def tokenize(text: str) -> list[str]:
 def greek_words(words: list[str]) -> list[str]:
     """Keep tokens carrying at least one Greek letter (drops Latin junk,
     bare numerals, symbols) — corpus hygiene on top of tokenize()."""
-    return [w for w in words if GREEK_RE.search(w)]
+    filtered = [w for w in words if GREEK_RE.search(w)]
+    # post-filter merge for split artifacts like καθαγίζουςα + ι -> καθαγίζουσαι
+    out: list[str] = []
+    i = 0
+    while i < len(filtered):
+        w = filtered[i]
+        if i + 1 < len(filtered) and filtered[i + 1] == "ι" and w.endswith("α") and len(w) >= 5:
+            # single ι fragment after α-ending word: merge diphthong
+            out.append(_sanitize_sigma_word(w + filtered[i + 1]))
+            i += 2
+            continue
+        out.append(w)
+        i += 1
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -285,6 +343,185 @@ def load_manifest() -> dict:
     return json.load(open(os.path.join(HERE, "manifest.json")))
 
 
+# Canonical titles for Septuaginta (tlg0527) works. Source manifests carry
+# Latin Vulgate-style names ("Abdias", "Paralipomenon i", "Osee"); the reader
+# shows BOTH traditions where they differ: "English / Lat. Traditional".
+LXX_TITLES: dict[str, str] = {
+    # work id -> modern English standard name
+    "abdias": "Obadiah",
+    "aggaeus": "Haggai",
+    "amos": "Amos",
+    "baruch": "Baruch",
+    "bel-et-draco-theodotionis-versio": "Bel and the Dragon (Theodotion version)",
+    "bel-et-draco-translatio-graeca": "Bel and the Dragon (Old Greek)",
+    "canticum": "Song of Songs",
+    "daniel-theodotionis-versio": "Daniel (Theodotion version)",
+    "daniel-translatio-graeca": "Daniel (Old Greek)",
+    "deuteronomy": "Deuteronomy",
+    "ecclesiasticus-sive-siracides-sapientia-jesu-filii-sirach":
+        "Sirach",
+    "epistula-jeremiae": "Epistle of Jeremiah",
+    "esdras-i-liber-apocryphus": "1 Esdras",
+    "esdras-ii-ezra-et-nehemias-in-textu-masoretico": "2 Esdras (Ezra–Nehemiah)",
+    "esther": "Esther",
+    "exodus": "Exodus",
+    "ezechiel": "Ezekiel",
+    "genesis": "Genesis",
+    "habacuc": "Habakkuk",
+    "isaias": "Isaiah",
+    "jeremias": "Jeremiah",
+    "job": "Job",
+    "joel": "Joel",
+    "jonas": "Jonah",
+    "josue-cod-vaticanus-cod-alexandrinus": "Joshua",
+    "judices-cod-alexandrinus": "Judges",
+    "judith": "Judith",
+    "leviticus": "Leviticus",
+    "machabaeorum-i": "1 Maccabees",
+    "machabaeorum-ii": "2 Maccabees",
+    "machabaeorum-iii": "3 Maccabees",
+    "machabaeorum-iv": "4 Maccabees",
+    "malachias": "Malachi",
+    "michaeas": "Micah",
+    "nahum": "Nahum",
+    "numbers": "Numbers",
+    "odae": "Odes",
+    "osee": "Hosea",
+    "paralipomenon-i-sive-chronicon-i": "1 Chronicles",
+    "paralipomenon-ii-sive-chronicon-ii": "2 Chronicles",
+    "proverbia": "Proverbs",
+    "psalmi": "Psalms",
+    "psalmi-salomonis": "Psalms of Solomon",
+    "regnorum-i-samuelis-i-in-textu-masoretico": "1 Samuel",
+    "regnorum-ii-samuelis-ii-in-textu-masoretico": "2 Samuel",
+    "regnorum-iii-regum-i-in-textu-masoretico": "1 Kings",
+    "regnorum-iv-regum-ii-in-textu-masoretico": "2 Kings",
+    "ruth": "Ruth",
+    "sapientia-salomonis": "Wisdom of Solomon",
+    "sophonias": "Zephaniah",
+    "susanna-theodotionis-versio": "Susanna (Theodotion version)",
+    "susanna-translatio-graeca": "Susanna (Old Greek)",
+    "threni-seu-lamentationes": "Lamentations",
+    "tobias-cod-vaticanus-cod-alexandrinus": "Tobit",
+    "zacharias": "Zechariah",
+}
+
+# Traditional Latin names shown as the secondary title: "English / Lat. X".
+LXX_TRADITIONAL: dict[str, str] = {
+    "abdias": "Abdias",
+    "aggaeus": "Aggaeus",
+    "amos": "Amos",
+    "baruch": "Baruch",
+    "bel-et-draco-theodotionis-versio": "Bel et Draco (Theodotionis versio)",
+    "bel-et-draco-translatio-graeca": "Bel et Draco (translatio Graeca)",
+    "canticum": "Canticum",
+    "daniel-theodotionis-versio": "Daniel (Theodotionis versio)",
+    "daniel-translatio-graeca": "Daniel (translatio Graeca)",
+    "deuteronomy": "Deuteronomy",
+    "ecclesiasticus-sive-siracides-sapientia-jesu-filii-sirach":
+        "Ecclesiasticus sive Siracides",
+    "epistula-jeremiae": "Epistula Jeremiae",
+    "esdras-i-liber-apocryphus": "Esdras i",
+    "esdras-ii-ezra-et-nehemias-in-textu-masoretico": "Esdras ii",
+    "esther": "Esther",
+    "exodus": "Exodus",
+    "ezechiel": "Ezechiel",
+    "genesis": "Genesis",
+    "habacuc": "Habacuc",
+    "isaias": "Isaias",
+    "jeremias": "Jeremias",
+    "job": "Job",
+    "joel": "Joel",
+    "jonas": "Jonas",
+    "josue-cod-vaticanus-cod-alexandrinus": "Josue",
+    "judices-cod-alexandrinus": "Judices",
+    "judith": "Judith",
+    "leviticus": "Leviticus",
+    "machabaeorum-i": "Machabaeorum i",
+    "machabaeorum-ii": "Machabaeorum ii",
+    "machabaeorum-iii": "Machabaeorum iii",
+    "machabaeorum-iv": "Machabaeorum iv",
+    "malachias": "Malachias",
+    "michaeas": "Michaeas",
+    "nahum": "Nahum",
+    "numbers": "Numbers",
+    "odae": "Odae",
+    "osee": "Osee",
+    "paralipomenon-i-sive-chronicon-i": "Paralipomenon i",
+    "paralipomenon-ii-sive-chronicon-ii": "Paralipomenon ii",
+    "proverbia": "Proverbia",
+    "psalmi": "Psalmi",
+    "psalmi-salomonis": "Psalmi Salomonis",
+    "regnorum-i-samuelis-i-in-textu-masoretico": "1 Kingdoms",
+    "regnorum-ii-samuelis-ii-in-textu-masoretico": "2 Kingdoms",
+    "regnorum-iii-regum-i-in-textu-masoretico": "3 Kingdoms",
+    "regnorum-iv-regum-ii-in-textu-masoretico": "4 Kingdoms",
+    "ruth": "Ruth",
+    "sapientia-salomonis": "Sapientia Salomonis",
+    "sophonias": "Sophonias",
+    "susanna-theodotionis-versio": "Susanna (Theodotionis versio)",
+    "susanna-translatio-graeca": "Susanna (translatio Graeca)",
+    "threni-seu-lamentationes": "Threni",
+    "tobias-cod-vaticanus-cod-alexandrinus": "Tobias",
+    "zacharias": "Zacharias",
+}
+
+# New Testament (tlg0031): English standard primary + traditional Greek
+# inscription in parens ("1 Corinthians (Πρὸς Κορινθίους β)"). Ordinals
+# follow the standard chapter letters; Gospels use Κατὰ + ordinal.
+NT_GREEK: dict[str, str] = {
+    "matthew": "Κατὰ Μαθθαῖον α",
+    "mark": "Κατὰ Μᾶρκον β",
+    "luke": "Κατὰ Λουκᾶν γ",
+    "john": "Κατὰ Ἰωάννην δ",
+    "acts": "Πράξεις Ἀποστόλων",
+    "romans": "Πρὸς Ῥωμαίους α",
+    "1-corinthians": "Πρὸς Κορινθίους α",
+    "2-corinthians": "Πρὸς Κορινθίους β",
+    "galatians": "Πρὸς Γαλάτας",
+    "ephesians": "Πρὸς Ἐφεσίους",
+    "philippians": "Πρὸς Φιλιππησίους",
+    "colossians": "Πρὸς Κολοσσαεῖς",
+    "1-thessalonians": "Πρὸς Θεσσαλονικεῖς α",
+    "2-thessalonians": "Πρὸς Θεσσαλονικεῖς β",
+    "1-timothy": "Πρὸς Τιμόθεον α",
+    "2-timothy": "Πρὸς Τιμόθεον β",
+    "titus": "Πρὸς Τίτον",
+    "philemon": "Πρὸς Φιλήμονα",
+    "hebrews": "Πρὸς Ἑβραίους",
+    "james": "Ἰακώβου",
+    "1-peter": "Πέτρου α",
+    "2-peter": "Πέτρου β",
+    "1-john": "Ἰωάννου α",
+    "2-john": "Ἰωάννου β",
+    "3-john": "Ἰωάννου γ",
+    "jude": "Ἰούδα",
+    "revelation": "Ἀποκάλυψις Ἰωάννου",
+}
+
+
+def canonical_title(tlg: str, wid: str, title: str) -> str:
+    """Reader-friendly display title for a work. LXX ids get dual
+    "English / Lat. Traditional" names; NT ids get a Greek parenthetical;
+    everything else passes through."""
+    if tlg == "tlg0527" and wid in LXX_TITLES:
+        eng = LXX_TITLES[wid]
+        trad = LXX_TRADITIONAL.get(wid)
+        if not trad or trad == eng:
+            return eng
+        return f"{eng} / Lat. {trad}"
+    if tlg == "tlg0031":
+        g = NT_GREEK.get(wid)
+        if g:
+            # idempotent: strip ALL previously appended Greek parens, then add
+            marker = f" ({g})"
+            base = title
+            while base.endswith(marker):
+                base = base[: -len(marker)]
+            return f"{base}{marker}"
+    return title
+
+
 def stage_parse(fresh: bool) -> list[dict]:
     os.makedirs(UNITS, exist_ok=True)
     man = load_manifest()
@@ -302,7 +539,10 @@ def stage_parse(fresh: bool) -> list[dict]:
         meta_path = out_path + ".meta.json"
         if not fresh and os.path.exists(out_path) and \
                 os.path.exists(meta_path):
-            works_meta.append(json.load(open(meta_path)))
+            meta = json.load(open(meta_path))
+            # normalize titles even for cached works (LXX id -> canonical)
+            meta["title"] = canonical_title(tlg, wid, meta["title"])
+            works_meta.append(meta)
             continue
 
         cands = sorted(w["files"],
@@ -357,7 +597,8 @@ def stage_parse(fresh: bool) -> list[dict]:
                                         separators=(",", ":")) + "\n")
         meta = {
             "id": wid, "author": w["author"], "tlg": tlg,
-            "title": w["title"], "urn": w["urn"], "license": w["license"],
+            "title": canonical_title(tlg, wid, w["title"]),
+            "urn": w["urn"], "license": w["license"],
             "kind": kind, "unitCount": total_units,
             "sources": [os.path.basename(f["path"]) for f, _, _ in chosen],
             "skippedEditions": skipped_editions,
