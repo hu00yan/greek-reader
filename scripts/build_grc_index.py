@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Build public/data/search-index-grc.json: a build-time INVERTED INDEX over
-the Greek unit cache (.cache-corpus/units/*.ndjson), answering "which WORKS
-contain this Greek word?" (所在作品).
+the COMMITTED corpus at public/data/texts/<tlg>/<work>*.json, answering
+"which WORKS contain this Greek word?" (所在作品). Reads only files that are
+in git, so it works on clean CI/CF build images (no local caches).
 
 Normalization matches src/api.ts stripAccents + final-sigma folding:
 lowercase, NFD, drop combining marks, ς→σ.
@@ -23,7 +24,7 @@ import re
 import unicodedata
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-UNITS = os.path.join(HERE, ".cache-corpus", "units")
+TEXTS = os.path.join(HERE, "public", "data", "texts")
 OUT = os.path.join(HERE, "public", "data", "search-index-grc.json")
 MAX_BYTES = 25_000_000
 MAX_WORKS_PER_WORD = 30
@@ -37,55 +38,61 @@ def norm(tok: str) -> str:
     return s.replace("ς", "σ")
 
 
+def iter_units():
+    """Yield (tlg, workId, ref, words) from every committed texts file.
+    Tolerates both unit shapes: {ref, words:[...]} and {ref, w:"a b c"}."""
+    for tlg in sorted(os.listdir(TEXTS)):
+        tdir = os.path.join(TEXTS, tlg)
+        if not os.path.isdir(tdir):
+            continue
+        for fname in sorted(os.listdir(tdir)):
+            m = re.match(r"^(.+)-part\d+\.json$", fname)
+            wid = m.group(1) if m else fname[:-5]
+            path = os.path.join(tdir, fname)
+            try:
+                doc = json.load(open(path, encoding="utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                print(f"  ! skipping unreadable {path}")
+                continue
+            for u in doc.get("units", []):
+                ref = u.get("ref") or ""
+                words = u.get("words")
+                if not words and isinstance(u.get("w"), str):
+                    words = u["w"].split(" ")
+                yield tlg, wid, ref, (words or [])
+
+
 def build(ref_cap: int) -> dict:
-    # word -> {workKey: [count, firstRef]}
     index: dict[str, dict[str, list]] = {}
-    files = sorted(f for f in os.listdir(UNITS) if f.endswith(".ndjson"))
     tlgs: dict[str, int] = {}
     wids: dict[str, int] = {}
-    for fname in files:
-        m = re.match(r"^(tlg\d{4})--(.+)\.ndjson$", fname)
-        if not m:
-            continue
-        tlg, wid = m.group(1), m.group(2)
+    for tlg, wid, ref, words in iter_units():
         if tlg not in tlgs:
             tlgs[tlg] = len(tlgs)
         if wid not in wids:
             wids[wid] = len(wids)
         wk = f"{tlg}/{wid}"
-        with open(os.path.join(UNITS, fname), encoding="utf-8") as fh:
-            for line in fh:
-                try:
-                    u = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                ref = u.get("ref") or ""
-                words = u.get("words") or []
-                for tok in words:
-                    k = norm(tok)
-                    if len(k) < 2:
-                        continue
-                    slot = index.get(k)
-                    if slot is None:
-                        slot = index[k] = {}
-                    ent = slot.get(wk)
-                    if ent is None:
-                        slot[wk] = [1, ref]
-                    else:
-                        ent[0] += 1
+        for tok in words:
+            k = norm(tok)
+            if len(k) < 2:
+                continue
+            slot = index.setdefault(k, {})
+            ent = slot.get(wk)
+            if ent is None:
+                slot[wk] = [1, ref]
+            else:
+                ent[0] += 1
     glist = sorted(tlgs, key=tlgs.get)
     wlist = sorted(wids, key=wids.get)
     e: dict[str, list] = {}
     for k, works in index.items():
-        ranked = sorted(works.items(), key=lambda kv: -kv[1][0])[:MAX_WORKS_PER_WORD]
+        ranked = sorted(works.items(),
+                        key=lambda kv: -kv[1][0])[:MAX_WORKS_PER_WORD]
         total = sum(c for _, (c, _) in works.items())
         e[k] = [
             total,
-            [
-                [wids[wk.split("/", 1)[1]],
-                 (meta[1] or "")[:24]]
-                for wk, meta in ranked
-            ][:ref_cap],
+            [[wids[wk.split("/", 1)[1]], (meta[1] or "")[:24]]
+             for wk, meta in ranked][:ref_cap],
         ]
     return {"v": 1, "g": glist, "w": wlist, "e": e}
 
