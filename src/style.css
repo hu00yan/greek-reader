@@ -137,14 +137,22 @@ html, body {
 
 body.lexicon-open #app {
   margin-left: min(var(--drawer-width), 94vw);
+  /* clamp the box too: margin alone left the fixed 75vw width sliding
+     underneath the drawer (baseline bug 3 — text ran under the panel) */
+  width: auto;
+  max-width: calc(100vw - min(var(--drawer-width), 94vw) - 2.5rem);
 }
 body.translation-open #app {
   margin-right: min(var(--drawer-width), 94vw);
+  width: auto;
+  max-width: calc(100vw - min(var(--drawer-width), 94vw) - 2.5rem);
 }
 /* word side-panel open: same squeeze treatment as drawers so the sticky
    controls bar never ends up underneath the panel */
 body.panel-open #app {
   margin-right: min(22rem, 92vw);
+  width: auto;
+  max-width: calc(100vw - min(22rem, 92vw) - 2.5rem);
 }
 /* both drawers open: squeeze from both sides remains via both margins */
 body.lexicon-open.translation-open #app {
@@ -290,6 +298,12 @@ input:focus, textarea:focus, select:focus {
   font-size: 0.76rem;
   padding: 3px 9px;    /* compact bar */
 }
+/* no control row may outgrow the bar (baseline bug 4: vocab-group's
+   inline-flex row pushed doc width to 411px at 390) */
+.controls > * {
+  max-width: 100%;
+  min-width: 0;
+}
 .controls button[aria-pressed="true"] { color: var(--accent); }
 .controls .spacer { flex: 1; }
 .crumbs {
@@ -407,8 +421,20 @@ input:focus, textarea:focus, select:focus {
 
 .pcol { min-width: 4.5rem; max-width: 12rem; }
 
-.pcard { margin-bottom: 4px; }
+.pcard {
+  margin-bottom: 4px;
+  /* never clip card content vertically (baseline bug 2 — the "sliced
+     glyphs" in captured fullPages; keep live rendering provably whole) */
+  min-height: 1.2em;
+  overflow: visible;
+}
 .pcard:last-child { margin-bottom: 0; }
+.pcard .gloss,
+.cand-row .gloss {
+  white-space: normal;      /* always wrap */
+  overflow: visible;        /* no vertical slice; ellipsis only via expand */
+  overflow-wrap: break-word;
+}
 
 /* collapsed extra candidates */
 .more-chip {
@@ -1116,6 +1142,21 @@ body.show-prosody .scansion {
   .cand-row .feats { word-break: break-word; }
 }
 
+/* compact control bar on phones (baseline bug 4: 390px overflow) */
+@media (max-width: 30rem) {
+  .controls {
+    gap: 5px;
+    row-gap: 5px;
+    padding: 8px 2px;
+  }
+  .controls button {
+    padding: 2px 7px;
+    font-size: 0.72rem;
+  }
+  .vocab-chip { padding: 2px 6px; }
+  .vocab-label { font-size: 0.72rem; }
+}
+
 /* PWA offline badge */
 .offline-badge {
   position: fixed;
@@ -1240,7 +1281,10 @@ a.text-hit:focus-visible {
 .vocab-group {
   display: inline-flex;
   align-items: center;
+  flex-wrap: wrap;      /* wrap internally instead of overflowing (bug 4) */
   gap: 4px;
+  max-width: 100%;
+  min-width: 0;
 }
 .vocab-label {
   color: var(--faint);

@@ -379,12 +379,12 @@ function bindTTSHighlightClear(): void {
   });
 }
 
-function ttsButtonForUnit(unit: Unit, row: El, token: string): El {
+function ttsButtonForUnit(unit: Unit, row: El, token: string, domRef?: string | null): El {
   const b = el("button", "tts-unit-btn", "🔊") as HTMLButtonElement;
   b.type = "button";
   const idleTitle = "Play this line from the start (espeak-ng grc, reconstructed)";
   b.title = idleTitle;
-  b.setAttribute("aria-label", `Play ${unit.ref || "unit"} in Ancient Greek`);
+  b.setAttribute("aria-label", `Play ${domRef || unit.ref || "unit"} in Ancient Greek`);
   b.addEventListener("click", (e) => {
     e.stopPropagation();
     // second click while THIS unit is active → STOP, never re-synthesize
@@ -435,6 +435,27 @@ export function setProsodyWorkId(id: string | null): void {
   currentProsodyWorkId = id;
 }
 
+/** Shipped data refs repeat when an edition chunks one verse into several
+ *  units (Mark 1.2 → 4 daṇḍa chunks; baseline bug 5b). DOM refs must be
+ *  unique for deep links / resume tracking, so the first occurrence keeps
+ *  the verbatim ref and repeats get letter suffixes: 1.2a, 1.2b, …
+ *  Counts are keyed per container (one reader view = one work), so
+ *  pagination continues the sequence and route changes reset it.
+ *  unit.ref itself is NEVER mutated — translation alignment matches on it. */
+const refCountsByRoot = new WeakMap<El, Map<string, number>>();
+
+export function uniqueDomRef(container: El, ref: string): string {
+  let counts = refCountsByRoot.get(container);
+  if (!counts) {
+    counts = new Map();
+    refCountsByRoot.set(container, counts);
+  }
+  const n = counts.get(ref) ?? 0;
+  counts.set(ref, n + 1);
+  if (n === 0) return ref;
+  return n <= 26 ? `${ref}${String.fromCharCode(96 + n)}` : `${ref}${n}`;
+}
+
 export function renderUnits(
   container: El,
   units: Unit[],
@@ -446,21 +467,25 @@ export function renderUnits(
   currentCtx = ctx;
   units.forEach((unit, uIdx) => {
     const row = el("div", kind === "prose" ? "unit prose-unit" : "line");
-    if (unit.ref) row.dataset.ref = unit.ref; // deep-link / resume target    // Deterministic header: ref + right-aligned grouped actions (TTS + AI)
+    // unique per-work DOM ref (repeated verse chunks get letter suffixes);
+    // unit.ref stays verbatim for translation alignment
+    const domRef = unit.ref ? uniqueDomRef(container, unit.ref) : null;
+    if (domRef) row.dataset.ref = domRef; // deep-link / resume target
+    // Deterministic header: ref + right-aligned grouped actions (TTS + AI)
     const head = el("div", "unit-head");
     // prose-head alias for backward compat + styling
     if (kind === "prose") head.classList.add("prose-head");
     const showRef = kind === "verse" ? !!unit.ref : !!(unit.ref && (baseIndex + uIdx) % 5 === 0);
-    if (showRef && unit.ref) {
-      const refEl = el("span", kind === "verse" ? "ref-label" : "ref-badge", unit.ref);
-      if (kind === "verse") refEl.title = `ref ${unit.ref}`;
+    if (showRef && domRef) {
+      const refEl = el("span", kind === "verse" ? "ref-label" : "ref-badge", domRef);
+      if (kind === "verse") refEl.title = `ref ${domRef}`;
       head.appendChild(refEl);
     }
     const actions = el("div", "unit-actions");
-    actions.appendChild(ttsButtonForUnit(unit, row, `u${baseIndex + uIdx}`));
-    const star = starButtonFor(unit.ref);
+    actions.appendChild(ttsButtonForUnit(unit, row, `u${baseIndex + uIdx}`, domRef));
+    const star = starButtonFor(domRef ?? unit.ref);
     if (star) actions.appendChild(star);
-    const copy = copyLinkButtonFor(unit.ref);
+    const copy = copyLinkButtonFor(domRef ?? unit.ref);
     if (copy) actions.appendChild(copy);
     actions.appendChild(aiButtonForUnit(unit));
     head.appendChild(actions);
@@ -613,7 +638,10 @@ export const SPEAKER_LEMMAS = new Set<string>([
   // include stripped variants without accents for robustness (stripAccents lower)
   "σωκρατεσ", "κριτωνοσ",
   // MSS speaker abbreviations used by dialogue editions (ΣΩ, ΙΩΝ, ΚΡ)
-  "σω", "σοκ", "κρ", "κρι",
+  // ευθ = Euthyphro, μελητοσ = Meletus — unit-initial in Plato's Euthyphro;
+  // without ευθ every ΕΥΘ unit fell through and only ΣΩ ever colored,
+  // collapsing the whole dialogue to a single speaker hue (baseline bug 5).
+  "σω", "σοκ", "κρ", "κρι", "ευθ", "μελητοσ",
   // NT / LXX frequent actors
   "ιησους", "πετρος", "παυλος", "ιωαννησ", "μωυσησ", "πιλατος",
   "ηρως", "δαβιδ", "αβρααμ",
@@ -738,6 +766,26 @@ interface ReflowEntry {
 const reflowRows = new Set<ReflowEntry>();
 let reflowIO: IntersectionObserver | null = null;
 let resizeTimer = 0;
+let appRO: ResizeObserver | null = null;
+
+/** Repack when the CONTENT CONTAINER changes WIDTH — drawer open/close,
+ *  side panel, or a font-size change all shift wrap points without a
+ *  window resize event (baseline bugs 1/3: stale packs under the drawer).
+ *  Width-only: re-packing changes the container HEIGHT, so a naive
+ *  observer would repack-loop forever and never let the page settle. */
+function ensureAppResizeObserver(): void {
+  if (appRO || typeof ResizeObserver === "undefined") return;
+  const app = document.getElementById("app");
+  if (!app) return;
+  let lastW = app.getBoundingClientRect().width;
+  appRO = new ResizeObserver((ents) => {
+    const w = ents[0]?.contentRect.width ?? app.getBoundingClientRect().width;
+    if (Math.abs(w - lastW) < 0.5) return; // height-only change → ignore
+    lastW = w;
+    onReflowResize();
+  });
+  appRO.observe(app);
+}
 
 function registerForReflow(row: El): void {
   // drop rows from torn-down views (route changes)
@@ -771,6 +819,7 @@ function ensureReflowObserver(): IntersectionObserver {
     alignAllScansions();
   }).catch(() => {});
   window.addEventListener("resize", onReflowResize);
+  ensureAppResizeObserver();
   return reflowIO;
 }
 
@@ -828,16 +877,22 @@ function unsplitRow(row: El): void {
 }
 
 /** Split one rendered row into per-visual-line blocks using the
- *  browser's own wrap points (offsetTop of the word spans). */
+ *  browser's own wrap points (offsetTop of the word spans).
+ *  Baseline bug 1 root cause: speaker labels are `.w` spans but carry NO
+ *  parse-card column — grouping by ALL `.w` spans shifted every card one
+ *  slot left per speaker and orphaned the row's last cards. Only
+ *  card-bearing words are grouped; speaker labels ride in the first block. */
 function reflowRow(entry: ReflowEntry): void {
   const { row } = entry;
-  const greek = row.querySelector(".greek-line") as El | null;
-  const parseRow = row.querySelector(".parse-row") as El | null;
+  const greek = row.querySelector(":scope > .greek-line") as El | null;
+  const parseRow = row.querySelector(":scope > .parse-row") as El | null;
   if (!greek || !parseRow || row.querySelector(".vline")) return;
-  const spans = Array.from(greek.querySelectorAll<HTMLElement>(".w"));
+  const spans = Array.from(
+    greek.querySelectorAll<HTMLElement>(".w:not(.speaker)"),
+  );
   if (spans.length < 2) return;
 
-  // group word indices by visual line via offsetTop
+  // group card-word indices by visual line via offsetTop
   const groups: number[][] = [[]];
   let top = spans[0].offsetTop;
   spans.forEach((s, i) => {
@@ -849,17 +904,27 @@ function reflowRow(entry: ReflowEntry): void {
   });
   if (groups.length < 2) return; // single visual line
 
-  // bucket every child node under its word: a .w span opens its own
-  // bucket; spaces/ref-labels attach to the current (preceding) word
+  // bucket every child node under its CARD word: a `.w:not(.speaker)` span
+  // opens its own bucket; speaker labels, spaces and ref-labels attach to
+  // the current (preceding) word — bucket 0 while still leading the unit.
   const buckets: Node[][] = spans.map(() => []);
+  // scansion spans are per unit.words (ALL words, speakers included) — keep
+  // a card-index → all-word-index map so scan symbols follow their word
+  const cardToAll: number[] = [];
   let wi = 0;
+  let allWi = 0;
   for (const n of Array.from(greek.childNodes)) {
-    const isW = n.nodeType === 1 &&
-      (n as Element).classList.contains("w");
-    if (!isW && wi === 0) buckets[0].push(n); // ref label / leading junk
-    else if (isW) buckets[Math.min(wi, spans.length - 1)].push(n);
-    else buckets[Math.max(0, wi - 1)].push(n); // trailing space
-    if (isW) wi += 1;
+    const isW = n.nodeType === 1 && (n as Element).classList.contains("w");
+    const isCardWord = isW &&
+      !(n as Element).classList.contains("speaker");
+    if (isCardWord) {
+      buckets[Math.min(wi, spans.length - 1)].push(n);
+      cardToAll[wi] = allWi;
+      wi += 1;
+    } else {
+      buckets[Math.max(0, wi - 1)].push(n);
+    }
+    if (isW) allWi += 1;
   }
 
   const head = row.querySelector(".unit-head");
@@ -884,7 +949,7 @@ function reflowRow(entry: ReflowEntry): void {
     // pack every word index in this visual line
     for (const idx of g) {
       for (const n of buckets[idx] ?? []) gl.appendChild(n);
-      const su = scanUs[idx];
+      const su = scanUs[cardToAll[idx] ?? idx];
       if (su && bScan) bScan.appendChild(su); // scansion follows its word's line
     }
     // every visual Greek line gets exactly its parse row beneath
