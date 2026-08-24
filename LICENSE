@@ -54,3 +54,15 @@ committed; fetched/bundled via vite.config.ts). It is a separate
 program under GPL-3.0 and is NOT covered by the MIT/Apache dual license;
 if you distribute the WASM you must comply with GPL-3.0 for that artifact
 alone. The rest of the codebase remains MIT OR Apache-2.0.
+
+------------------------------------------------------------------------------
+DATA NOTES (not covered by the code license above)
+
+- Cunliffe, R.J., "A Lexicon of the Homeric Dialect" (Blackie/Toronto, 1924).
+  Published before 1930; believed public domain (no renewal found; author
+  d. 1956). Machine-readable TEI digitization by Gregory Crane
+  (github.com/gregorycrane/Homerica); ingested to public/data/dicts/cunliffe/.
+- Autenrieth, G., "A Homeric Dictionary" digitation, ingested to
+  public/data/dicts/homer/ — same open-republication basis.
+- Texts/morphology/translations retain their source licenses as documented in
+  DEPLOYMENT.md / catalog.json entries and About page.
