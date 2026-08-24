@@ -1453,3 +1453,56 @@ body.vocab-highlight .greek-line .w.vk {
   border-color: var(--accent);
   color: var(--accent);
 }
+
+/* ---- bilingual (zh + original) work titles ---- */
+/* Home cards: Chinese title primary above, original small & muted below. */
+.work-titles {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.work-title-zh {
+  color: var(--accent);
+  font-size: 1.02rem;
+  line-height: 1.3;
+}
+.work-title-orig {
+  color: var(--faint);
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+/* Reader header: compact stacked pair inside the controls bar; each line
+   clips with ellipsis so long titles can never push the bar wide. */
+.crumbs.bilingual {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
+}
+.crumbs.bilingual .crumb-zh {
+  color: var(--text);
+  font-size: 0.88rem;
+}
+.crumbs.bilingual .crumb-orig {
+  color: var(--faint);
+  font-size: 0.7rem;
+}
+.crumbs.bilingual .crumb-zh,
+.crumbs.bilingual .crumb-orig {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* CJK titles must never be case-transformed — uppercase/small-caps would
+   distort any Latin embedded in zh strings and is meaningless on han. */
+.work-title-zh,
+.crumbs .crumb-zh {
+  text-transform: none;
+  font-variant: normal;
+}
+/* phones: shrink the stacked crumbs further (bar wraps to full row ≤40rem) */
+@media (max-width: 30rem) {
+  .crumbs.bilingual .crumb-zh { font-size: 0.8rem; }
+  .work-title-zh { font-size: 0.98rem; }
+}

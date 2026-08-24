@@ -15,6 +15,13 @@ const el = (tag: string, cls?: string, text?: string): HTMLElement => {
   return e;
 };
 
+/** Defensive titleZh reader: catalog.json gains the field concurrently;
+ *  absent / non-string / whitespace-only all yield "" → original title only. */
+function zhTitleOf(w: unknown): string {
+  const zh = (w as { titleZh?: unknown } | null)?.titleZh;
+  return typeof zh === "string" ? zh.trim() : "";
+}
+
 export function renderHome(app: HTMLElement): void {
   app.replaceChildren();
   app.appendChild(el("h1", undefined, "Greek Reader"));
@@ -119,8 +126,20 @@ export function renderHome(app: HTMLElement): void {
       const link = el("a", "work-link") as HTMLAnchorElement;
       link.href = `#/${author.tlg}/${w.id}`;
       link.dataset.title = stripAccents(w.title);
-      const t = el("span", "work-title", w.title);
-      link.appendChild(t);
+      // Bilingual card: titleZh (when the catalog ships it) is primary,
+      // original title small + muted underneath; else original only.
+      const zh = zhTitleOf(w);
+      if (zh) {
+        link.dataset.titleZh = zh; // raw zh — search filter target
+        const titles = el("span", "work-titles");
+        const zhEl = el("span", "work-title-zh", zh);
+        zhEl.lang = "zh";
+        titles.appendChild(zhEl);
+        titles.appendChild(el("span", "work-title-orig", w.title));
+        link.appendChild(titles);
+      } else {
+        link.appendChild(el("span", "work-title", w.title));
+      }
       link.appendChild(el("span", "work-meta",
         `${w.unitCount.toLocaleString()} units`));
       link.title = w.license;
@@ -151,7 +170,11 @@ export function renderHome(app: HTMLElement): void {
       for (const link of Array.from(
         block.querySelectorAll<HTMLAnchorElement>(".work-link"),
       )) {
-        const hit = authorHit || !q || link.dataset.title!.includes(q);
+        // match original title AND Chinese title (plain substring; zh needs
+        // no accent folding, and the query is already lowercased)
+        const hit = authorHit || !q ||
+          link.dataset.title!.includes(q) ||
+          (!!link.dataset.titleZh && link.dataset.titleZh.includes(q));
         link.hidden = !hit;
         if (hit) shownInBlock += 1;
       }
