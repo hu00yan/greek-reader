@@ -7,9 +7,11 @@
 //     insertion-order trim keeps it around 300 entries (LRU-ish)
 //   - navigation requests fall back to the cached shell when offline
 
-const CACHE = "greek-reader-v1";
+const CACHE = "greek-reader-v2";
 const MAX_ENTRIES = 300;
 
+// TTS payload is grc-only (ancient Greek, reconstructed) — dist/espeak-ng.wasm ~1.1MB raw (≤5MB target).
+// Precached at install for offline use; fetched lazily in-app only on first 🔊 click (dynamic import + fetch).
 self.addEventListener("install", (event) => {
   event.waitUntil(
     caches.open(CACHE).then((c) => c.addAll(["/", "/index.html", "/espeak-ng.wasm"]).catch(() => {}))
