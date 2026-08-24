@@ -43,6 +43,18 @@ URL: **`https://interlinear-greek.pages.dev`** (production)
 > always deploy from repo root as above. Do NOT pass a positional directory:
 > `wrangler pages deploy .` repo-root-scans caches (.cache-trans >25MiB) and fails.
 
+#### Build modes (since 2026-08-24)
+
+| mode | command | sidecars | use |
+|---|---|---|---|
+| slim (default) | `npm run build` (`DEPLOY_TARGET=cf`) | none | Cloudflare Pages — edge auto-compresses br/gzip; uploaded sidecars are ignored and only slowed brotli + upload |
+| generic | `npm run build:generic` (`DEPLOY_TARGET=generic`) | .br/.gz emitted | Vercel/nginx/GH-Pages fallbacks serving raw static files |
+
+Measured (2026-08-24): dist 378.9MB / 4309 files (2846 sidecars), build+postbuild
+~5-6 min → **278.6MB / 1463 files, 0 sidecars, full build 38s**; deploy upload
+dropped to ~17s for a full-content re-upload. Edge serves `content-encoding: br`
+on data JSON despite zero uploaded sidecars.
+
 ### 2. Vercel (dormant — ready but not deployed)
 Project already linked via `.vercel/project.json`
 (`greek-reader`, team `hu00yans-projects`). Nothing currently auto-deploys;

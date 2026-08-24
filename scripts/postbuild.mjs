@@ -87,9 +87,19 @@ for (const file of walk(DIST)) {
   }
 }
 
-/* ---- 3: precompression (.br q11 + .gz) ---- */
+/* ---- 3: precompression (.br q11 + .gz) — CONDITIONAL ----
+ * DEPLOY_TARGET=cf (default): SKIP entirely. Cloudflare Pages auto-compresses
+ * text at the edge and ignores uploaded sidecars, so emitting ~2.8k .br/.gz
+ * files only slowed brotli + upload.
+ * DEPLOY_TARGET=generic: emit sidecars for Vercel/nginx/GH-Pages fallbacks
+ * that serve static files without edge compression. */
+const DEPLOY_TARGET = process.env.DEPLOY_TARGET || "cf";
+const PRECOMPRESS = DEPLOY_TARGET !== "cf";
 let compressed = 0;
-for (const file of walk(DIST)) {
+if (!PRECOMPRESS) {
+  console.log(`postbuild: DEPLOY_TARGET=${DEPLOY_TARGET} -> skip .br/.gz sidecars`);
+}
+for (const file of PRECOMPRESS ? walk(DIST) : []) {
   if (file.endsWith(".wasm")) continue;
   const size = fs.statSync(file).size;
   if (size < MIN_BYTES) continue;

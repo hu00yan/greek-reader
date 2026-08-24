@@ -8,7 +8,8 @@
     "build": "python3 scripts/build-search-index.py && python3 scripts/build_grc_index.py && vite build",
     "preview": "vite preview",
     "postbuild": "node scripts/postbuild.mjs",
-    "deploy:vercel": "npx -y vercel@latest deploy dist --prod --yes"
+    "deploy:vercel": "npx -y vercel@latest deploy dist --prod --yes",
+    "build:generic": "DEPLOY_TARGET=generic npm run build"
   },
   "devDependencies": {
     "@playwright/test": "^1.49.0",
