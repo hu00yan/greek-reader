@@ -27,3 +27,7 @@ wrangler.toml.bak
 
 .cache-fst/
 .cache-eval/
+playwright-report/
+test-results/
+preview.pid
+*.pid
