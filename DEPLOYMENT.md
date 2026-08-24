@@ -19,48 +19,45 @@ npx vite build --base=/greek-reader/
 
 ## Platform notes & exact commands
 
-### 1. Cloudflare Pages — SOLE PRODUCTION TARGET
-Requires `wrangler` auth: `npx wrangler login` (or `CLOUDFLARE_API_TOKEN` env var).
+### 1. Cloudflare Pages — SOLE PRODUCTION TARGET (Git integration)
+
+**Primary deploy path: Cloudflare Pages Git integration** — connected to this
+GitHub repo; every push to `main` auto-builds and auto-deploys production.
+Pull requests get automatic preview deployments.
+
+Build configuration (Cloudflare dashboard → Workers & Pages →
+interlinear-greek → Settings → Builds & deployments):
+
+| setting | value |
+|---|---|
+| Build command | `npm run build` |
+| Build output directory | `dist` |
+| Production branch | `main` |
+| Environment variable | `NODE_VERSION` = `22` (recommended) |
+| Build cache | recommended ON |
+
+URL: **`https://<git-connected-project>.pages.dev`** (production; exact
+subdomain to be confirmed by the owner after first Git-integration build).
+
+> Legacy direct-upload note: the old wrangler-pushed project still serves
+> STALE content at its subdomain (`https://greek-reader-auv.pages.dev` was
+> deleted earlier; any other legacy direct-upload URL predating the Git
+> integration is frozen). Pending owner decision: keep as archive or delete.
+
+#### Manual / local alternative (wrangler CLI)
+
+For ad-hoc local deploys without a push:
 
 ```bash
-# one-time (already done)
-npx wrangler pages project create interlinear-greek --production-branch main
-
-# every deploy (from repo root; config-driven assets = dist/, functions/ ship)
-npx wrangler pages deploy --commit-dirty=true
+npx wrangler login   # one-time
+# from repo root; config-driven assets = dist/, functions/ ship
+npx wrangler pages deploy --commit-dirty=true --project-name interlinear-greek
 ```
 
-`wrangler.toml` in repo root pins the output dir so static assets + Functions deploy together:
-
-```toml
-name = "greek-reader"
-pages_build_output_dir = "dist"
-```
-
-URL: **`https://interlinear-greek.pages.dev`** (production)
-
-> If deploying only raw `dist/`, any `functions/api/*.ts` endpoints will NOT be included —
-> always deploy from repo root as above. Do NOT pass a positional directory:
-> `wrangler pages deploy .` repo-root-scans caches (.cache-trans >25MiB) and fails.
-
-#### Git-push auto-deploy (GitHub Action, since 2026-08-24)
-
-`.github/workflows/deploy.yml` deploys to Cloudflare Pages on every push to
-`main` (and manual `workflow_dispatch`). Concurrency: one deploy per ref,
-new runs cancel in-progress ones.
-
-One-time setup — add BOTH repo secrets (Settings → Secrets and variables →
-Actions → New repository secret; names exactly as below, values never
-committed):
-
-- `CLOUDFLARE_API_TOKEN` — a token with **Cloudflare Pages: Edit** permission.
-- `CLOUDFLARE_ACCOUNT_ID` — shown on the Cloudflare dashboard under
-  Workers & Pages → Overview (right-hand "Account details").
-
-Until both secrets exist the workflow exits early with a warning and the job
-stays green — pushes are simply not deployed. The build uses the slim mode
-(`DEPLOY_TARGET=cf`, no sidecars); the wrangler step intentionally deploys
-from the repo root so `functions/api/*` ship alongside `dist/`.
+`wrangler.toml` pins `pages_build_output_dir = "dist"`. Do NOT pass a
+positional directory: `wrangler pages deploy .` repo-root-scans caches
+(.cache-trans >25MiB) and fails. No API secrets are needed in the repo for
+this path — it uses your local `wrangler login`.
 
 #### Build modes (since 2026-08-24)
 
