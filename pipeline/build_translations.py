@@ -701,23 +701,52 @@ def stage_align_emit() -> None:
                 else:
                     stats["missing"] += 1
         else:
-            shared = mismatched = 0
+            # Prose: aggregate Greek units by base ref to avoid duplicating the same
+            # English section text for each dialogue turn sharing a Stephanus/Bekker
+            # ref (e.g. Ion: 13 units at steph.530). Each base's English is split
+            # proportionally across *all* Greek units sharing that base, ensuring
+            # per-unit ref mapping with varied sentences (not repeating first sentence).
+            from collections import defaultdict
+            base_to_units: dict[str, list[dict]] = defaultdict(list)
+            base_order: list[str] = []
             for grp in greek_prose_groups(units):
-                base = grp[0]["ref"]
-                en = prose.get(base)
+                # grp is already chunk-grouped (e.g. [steph.530, steph.530.2] for a
+                # long speech). All units in grp share the same logical base.
+                raw_base = grp[0]["ref"]
+                # Normalize chunk suffix so steph.530.2 lookup maps to steph.530
+                base_key = raw_base
+                # prose keys never include chunk suffix; strip trailing .<digits> if needed
+                if "." in base_key:
+                    parts = base_key.split(".")
+                    if len(parts) >= 2 and parts[-1].isdigit():
+                        cand = ".".join(parts[:-1])
+                        if cand in prose:
+                            base_key = cand
+                if base_key not in base_to_units:
+                    base_order.append(base_key)
+                base_to_units[base_key].extend(grp)
+            shared = mismatched = 0
+            for base_key in base_order:
+                grp_units = base_to_units[base_key]
+                en = prose.get(base_key)
+                # fallback: try any unit's exact ref (handles rare chunk-only keys)
+                if en is None:
+                    for u in grp_units:
+                        if u["ref"] in prose:
+                            en = prose[u["ref"]]
+                            break
                 if not en:
-                    stats["missing"] += len(grp)
+                    stats["missing"] += len(grp_units)
                     continue
-                sizes = [len(u["words"]) for u in grp]
+                sizes = [len(u["words"]) for u in grp_units]
                 pieces = bc._chunk_prose(list(en))
-                if len(pieces) == len(grp):
-                    for u, p in zip(grp, pieces):
-                        out.append({"ref": u["ref"],
-                                    "text": " ".join(p)})
+                if len(pieces) == len(grp_units):
+                    for u, p in zip(grp_units, pieces):
+                        out.append({"ref": u["ref"], "text": " ".join(p)})
                         stats["prose_exact"] += 1
                     shared += 1
                 else:
-                    for u, p in zip(grp, _split_proportional(en, sizes)):
+                    for u, p in zip(grp_units, _split_proportional(en, sizes)):
                         out.append({"ref": u["ref"], "text": p})
                         stats["prose_prop"] += 1
                     shared += 1
@@ -752,16 +781,13 @@ def stage_align_emit() -> None:
                             encoding="utf-8"),
                   ensure_ascii=False, separators=(",", ":"))
         emitted.append(key)
-        # naive trans/<id>.json consumers: deterministic pick for dup ids
+        # plain fallback intentionally NOT emitted: bare-id collisions must use
+        # qualified tlg--id.json paths to avoid orphan collisions (see hygiene)
         prev = plain_fallback.get(ent["id"])
         if prev is None or ent["tlg"] < prev[0]:
             plain_fallback[ent["id"]] = (ent["tlg"], doc)
         stats["works"] += 1
-    for wid, (_, doc) in plain_fallback.items():
-        if wid in dups:
-            json.dump(doc, open(os.path.join(TRANS, f"{wid}.json"), "w",
-                                encoding="utf-8"),
-                      ensure_ascii=False, separators=(",", ":"))
+    # no bare-id fallback write — orphans removed; catalog uses qualified paths
     with open(os.path.join(PARSED, "_dups.json"), "w",
               encoding="utf-8") as fh:
         json.dump(sorted(dups), fh)
