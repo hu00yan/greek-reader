@@ -5,11 +5,12 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "python3 scripts/build-search-index.py && python3 scripts/build_grc_index.py && vite build",
+    "build": "vite build",
     "preview": "vite preview",
     "postbuild": "node scripts/postbuild.mjs",
     "deploy:vercel": "npx -y vercel@latest deploy dist --prod --yes",
-    "build:generic": "DEPLOY_TARGET=generic npm run build"
+    "build:generic": "DEPLOY_TARGET=generic npm run build",
+    "build:indexes": "python3 scripts/build-search-index.py && python3 scripts/build_grc_index.py"
   },
   "devDependencies": {
     "@playwright/test": "^1.49.0",
