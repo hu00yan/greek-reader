@@ -1,9 +1,15 @@
 // Shared interlinear rendering: Greek units (verse lines or prose chunks)
 // with per-word parse cards, controls bar, and the click-for-details panel.
-import { loadGloss, loadMorph, stripAccents, type Gloss, type Parse, type Unit } from "./api";
-import { openLexicon, lexiconButton } from "./lexicon";
+import { loadCatalog, loadGloss, loadMorph, stripAccents, type Gloss, type Parse, type Unit } from "./api";
+import { applyClasses, attachChip, isKnown, markKnown, toolbarControls, unmarkKnown } from "./vocab";
+import { copyLinkButtonFor, openStarPanel, starButtonFor } from "./bookmarks";
+import { fetchHomerEntries, HOMER_DICTS, isHomerActive, openLexicon,
+  lexiconButton } from "./lexicon";
 import { themeControl } from "./theme";
-import { speakGreek, stopTTS, pauseTTS, resumeTTS, speakQueue, onTTSStatus, getTTSStatus } from "./tts";
+import { speakGreek, stopTTS, pauseTTS, resumeTTS, speakQueue, onTTSStatus, getTTSStatus, isUnitActive, stopUnit } from "./tts";
+import {
+  getProsodyPattern, isProsodyEnabled, buildScansionRow, onProsodyToggle,
+} from "./prosody";
 
 type El = HTMLElement;
 const el = (tag: string, cls?: string, text?: string): El => {
@@ -24,6 +30,9 @@ export interface RenderCtx {
   /** Author register hint: "prose" enables the dialect penalty in the
    *  parse ranking; anything else is neutral. */
   genre?: string;
+  /** Author TLG id when known (reader routes). Gates speaker coloring to
+   *  dialogue works — undefined (e.g. paste view) means never color. */
+  tlg?: string;
 }
 
 /* ---------------- parse ranking ---------------- */
@@ -341,27 +350,89 @@ function parseCard(p: Parse, ctx: RenderCtx, col: El): void {
  *  kind "verse": one row per unit — ref label, Greek line, cards beneath.
  *  kind "prose": ref badge + flowing paragraph of words, cards beneath.
  *  baseIndex: cumulative unit offset (prose refs show every 5th chunk).
- *  Refs render VERBATIM — Stephanus/Bekker/book.line strings as shipped. */
-function ttsButtonForUnit(unit: Unit): El {
+ *  Refs render VERBATIM — Stephanus/Bekker/book.line strings as shipped.
+ *  Header fix: every unit gets a deterministic .unit-head with ref + grouped
+ *  actions (TTS 🔊 + AI). Buttons are inline flex gap at header end (right-aligned),
+ *  never between greek lines and parse rows. No MutationObserver mid-unit. */
+/* Per-unit TTS: ONE 🔊 button, state machine per unit —
+ * click 1: synthesize+play, row highlights, button flips to small ⏹;
+ * click 2 on the ACTIVE unit: STOP immediately (espeak cancel via
+ * stopUnit → stopTTS generation bump; NO re-synthesis, no double-speak);
+ * clicking ANOTHER unit while one plays: stops current, starts new;
+ * global toolbar Play/Pause cancels the unit and vice versa. The
+ * currently-spoken row keeps .tts-speaking. */
+function markSpeaking(row: El, on: boolean): void {
+  row.classList.toggle("tts-speaking", on);
+  if (on) row.setAttribute("data-tts-active", "1");
+  else row.removeAttribute("data-tts-active");
+}
+// one global listener clears stale highlights whenever TTS stops/pauses/errors
+let ttsHighlightBound = false;
+function bindTTSHighlightClear(): void {
+  if (ttsHighlightBound) return;
+  ttsHighlightBound = true;
+  onTTSStatus((s) => {
+    if (s === "playing" || s === "loading") return;
+    document
+      .querySelectorAll<HTMLElement>(".tts-speaking")
+      .forEach((r) => markSpeaking(r, false));
+  });
+}
+
+function ttsButtonForUnit(unit: Unit, row: El, token: string): El {
   const b = el("button", "tts-unit-btn", "🔊") as HTMLButtonElement;
   b.type = "button";
-  b.title = "Hear in Ancient Greek (espeak-ng grc, reconstructed)";
-  b.setAttribute("aria-label", `Speak ${unit.ref || "unit"} in Ancient Greek`);
+  const idleTitle = "Play this line from the start (espeak-ng grc, reconstructed)";
+  b.title = idleTitle;
+  b.setAttribute("aria-label", `Play ${unit.ref || "unit"} in Ancient Greek`);
   b.addEventListener("click", (e) => {
     e.stopPropagation();
-    const text = unit.words.join(" ");
-    if (!text.trim()) return;
-    // visual feedback
-    b.disabled = true;
-    b.textContent = "⏳";
-    void speakGreek(text).catch(() => {
-      // error handled via status; restore
-    }).finally(() => {
-      b.disabled = false;
+    // second click while THIS unit is active → STOP, never re-synthesize
+    if (isUnitActive(token)) {
+      stopUnit(token); // generation bump discards in-flight WAV work
+      markSpeaking(row, false);
       b.textContent = "🔊";
-    });
+      b.classList.remove("tts-loading");
+      b.title = idleTitle;
+      return;
+    }
+    // EXACT unit text — never a joined neighborhood or cached queue slice
+    const text = unit.words.join(" ").trim();
+    if (!text.trim()) return;
+    stopTTS(); // clicking another unit's 🔊 (or re-start) stops the previous
+    bindTTSHighlightClear();
+    markSpeaking(row, true);
+    b.classList.add("tts-loading");
+    b.textContent = "⏹";
+    b.title = "Stop";
+    void speakGreek(text, token)
+      .catch(() => { /* status handled via onTTSStatus */ })
+      .finally(() => {
+        if (!isUnitActive(token)) {
+          markSpeaking(row, false);
+          b.textContent = "🔊";
+          b.classList.remove("tts-loading");
+          b.title = idleTitle;
+        }
+      });
   });
   return b;
+}
+
+function aiButtonForUnit(unit: Unit): El {
+  const b = el("button", "ai-btn ai-btn-line", "AI") as HTMLButtonElement;
+  b.type = "button";
+  b.title = "AI Translate this line";
+  b.setAttribute("aria-label", `AI translate ${unit.ref || "unit"}`);
+  // Handler bound by llm-panel's attachRowButtons (deterministic header placement)
+  // No direct listener here to avoid duplicate binding; sweeper will attach via data-ai-bound
+  return b;
+}
+
+let currentProsodyWorkId: string | null = null;
+
+export function setProsodyWorkId(id: string | null): void {
+  currentProsodyWorkId = id;
 }
 
 export function renderUnits(
@@ -375,35 +446,56 @@ export function renderUnits(
   currentCtx = ctx;
   units.forEach((unit, uIdx) => {
     const row = el("div", kind === "prose" ? "unit prose-unit" : "line");
-    if (kind === "prose") {
-      const head = el("div", "prose-head");
-      if (unit.ref && (baseIndex + uIdx) % 5 === 0) {
-        head.appendChild(el("span", "ref-badge", unit.ref));
-      }
-      // per-unit TTS button next to ref badge (always, even when ref hidden we still add for that unit)
-      head.appendChild(ttsButtonForUnit(unit));
-      row.appendChild(head);
+    if (unit.ref) row.dataset.ref = unit.ref; // deep-link / resume target    // Deterministic header: ref + right-aligned grouped actions (TTS + AI)
+    const head = el("div", "unit-head");
+    // prose-head alias for backward compat + styling
+    if (kind === "prose") head.classList.add("prose-head");
+    const showRef = kind === "verse" ? !!unit.ref : !!(unit.ref && (baseIndex + uIdx) % 5 === 0);
+    if (showRef && unit.ref) {
+      const refEl = el("span", kind === "verse" ? "ref-label" : "ref-badge", unit.ref);
+      if (kind === "verse") refEl.title = `ref ${unit.ref}`;
+      head.appendChild(refEl);
     }
+    const actions = el("div", "unit-actions");
+    actions.appendChild(ttsButtonForUnit(unit, row, `u${baseIndex + uIdx}`));
+    const star = starButtonFor(unit.ref);
+    if (star) actions.appendChild(star);
+    const copy = copyLinkButtonFor(unit.ref);
+    if (copy) actions.appendChild(copy);
+    actions.appendChild(aiButtonForUnit(unit));
+    head.appendChild(actions);
+    row.appendChild(head);
+
     const greek = el("div", "greek-line");
     greek.setAttribute("lang", "grc");
     const parseRow = el("div", "parse-row");
 
-    if (kind === "verse" && unit.ref) {
-      const refLabel = el("span", "ref-label", unit.ref);
-      refLabel.title = `ref ${unit.ref}`;
-      greek.appendChild(refLabel);
-      greek.appendChild(ttsButtonForUnit(unit));
-    } else if (kind === "verse") {
-      greek.appendChild(ttsButtonForUnit(unit));
+    // unit-initial person name => speaker label (first 1-2 TitleCase pers words)
+    // Render speakerSpan as colored label with hashColor, EXCLUDE from parse lookup
+    const spkCount = speakerSpanCount(unit, ctx);
+    const speakerWords = unit.words.slice(0, spkCount);
+    const restWords = unit.words.slice(spkCount);
+    if (speakerWords.length) {
+      speakerWords.forEach((w, idx) => {
+        const parses = ctx.morph.get(stripAccents(w)) ?? [];
+        const hit = parses.find((p) => isPersonParse(p));
+        const canonical = stripAccents(hit?.l || w);
+        const col = hashColor(canonical);
+        // include `w` for compatibility with existing selector tests, but
+        // speaker is NOT given a parse card and is not interactive as normal word
+        const label = el("span", `w speaker spk-${col}`, w);
+        label.title = `speaker: ${hit?.l || w}`;
+        // distinguish from normal w: no click handler, no parse column
+        greek.appendChild(label);
+        if (idx < speakerWords.length - 1) greek.appendChild(document.createTextNode(" "));
+      });
+      if (restWords.length) greek.appendChild(document.createTextNode(" "));
     }
 
-    // unit-initial person name => speaker label (v1: leading tokens only)
-    const spkCount = speakerSpanCount(unit, ctx);
-
-    unit.words.forEach((w, i) => {
+    restWords.forEach((w, i) => {
       const parses = ctx.morph.get(stripAccents(w)) ?? [];
       const span = el("span", "w", w);
-      if (i < spkCount) markSpeaker(span, w, parses);
+      span.dataset.stripped = stripAccents(w); // vocab book key
       const col = parseCards(w, ctx);
       const many = parses.length > 1;
       span.addEventListener("click", () => {
@@ -416,36 +508,134 @@ export function renderUnits(
       // double-click keeps the full side panel too (no-op if already open)
       span.addEventListener("dblclick", () => openPanel(span, w, ctx));
       greek.appendChild(span);
-      if (i < unit.words.length - 1) {
+      if (i < restWords.length - 1) {
         greek.appendChild(document.createTextNode(" "));
       }
       parseRow.appendChild(col);
     });
 
     row.appendChild(greek);
+
+    // prosody: word-aligned scansion under each verse Greek line (toggle via
+    // toolbar). Each .scan-u span maps 1:1 to the .w span above it; widths are
+    // pinned by alignScansionRows() so symbols sit exactly under their word.
+    if (kind === "verse" && currentProsodyWorkId) {
+      const globalIdx = baseIndex + uIdx;
+      const pat = getProsodyPattern(currentProsodyWorkId, unit.ref, globalIdx);
+      if (pat) {
+        const scan = buildScansionRow(unit.ref, unit.words, pat);
+        // visibility controlled by body.show-prosody; alignment deferred to
+        // the prosody-toggle/observer passes (element is display:none now)
+        row.appendChild(scan);
+      }
+    }
+
     row.appendChild(parseRow);
     container.appendChild(row);
     registerForReflow(row);
   });
+  applyClasses(); // vocab dimming + stats chip for the freshly rendered page
+  if (isProsodyEnabled()) {
+    requestAnimationFrame(() => alignAllScansions());
+  }
 }
+
+/* ---------------- scansion alignment ----------------
+ * Pin each .scan-u span to the exact box of its .w word span: width := word
+ * width, trailing margin := the gap to the next word. Both rows then wrap at
+ * identical points (same column widths), so every — / ∪ sits under its word
+ * and foot pipes land between the right syllables. Runs only while rows are
+ * visible (display:none under body:not(.show-prosody)); re-run on toggle,
+ * font resize, and web-font load. */
+
+function alignScansionContainer(scan: El, greek: El): boolean {
+  const sus = Array.from(scan.querySelectorAll<HTMLElement>(".scan-u"));
+  const ws = Array.from(greek.querySelectorAll<HTMLElement>(".w"));
+  if (!sus.length || ws.length < sus.length) return false;
+  // hidden rows can't be measured — flag for the next pass instead
+  if (!scan.isConnected || scan.getClientRects().length === 0) return false;
+  for (let i = 0; i < sus.length; i++) {
+    const w = ws[i];
+    const su = sus[i];
+    const wr = w.getBoundingClientRect();
+    su.style.width = `${wr.width}px`;
+    if (i < sus.length - 1) {
+      const wn = ws[i + 1].getBoundingClientRect();
+      su.style.marginRight = `${Math.max(0, wn.left - wr.right)}px`;
+    } else {
+      su.style.marginRight = "0px";
+    }
+  }
+  scan.removeAttribute("data-needs-align");
+  return true;
+}
+
+/** Align every visible scansion row against its Greek line. */
+export function alignAllScansions(): void {
+  document.querySelectorAll<HTMLElement>(".line, .prose-unit").forEach((row) => {
+    const scan = row.querySelector<HTMLElement>(":scope > .scansion");
+    if (scan) {
+      const greek = row.querySelector<HTMLElement>(":scope > .greek-line");
+      if (greek) alignScansionContainer(scan, greek);
+    }
+    // split (reflowed) rows: one scansion per visual-line block
+    row.querySelectorAll<HTMLElement>(".vline").forEach((b) => {
+      const scanB = b.querySelector<HTMLElement>(":scope > .scansion");
+      const greekB = b.querySelector<HTMLElement>(":scope > .greek-line");
+      if (scanB && greekB) alignScansionContainer(scanB, greekB);
+    });
+  });
+}
+
+// keep alignment fresh: prosody toggle, viewport resize / font-size buttons,
+// web-font swap. (renderUnits batches call it directly after append.)
+let scansionHooksBound = false;
+function bindScansionHooks(): void {
+  if (scansionHooksBound) return;
+  scansionHooksBound = true;
+  onProsodyToggle(() => {
+    requestAnimationFrame(() => requestAnimationFrame(alignAllScansions));
+  });
+}
+bindScansionHooks();
 
 /* ---------------- speaker labels ---------------- */
 
-/** Morpheus marks person names with a "pers" feature token; the shipped
- *  static shards carry no such tag, so frequent dialogue speakers are
- *  also matched through this lemma config map. Extend as works ship. */
-const SPEAKER_LEMMAS = new Set<string>([
+/** Proper-name speaker lexicon: the ONLY words that may ever render as a
+ *  colored speaker label. Extend as dialogue works ship. */
+export const SPEAKER_LEMMAS = new Set<string>([
   // Platonic cast
   "σωκρατησ", "πλατων", "φαιδρος", "γλαυκων", "αδειμαντοσ",
   "θρασυμαχοσ", "πολεμαρχοσ", "κεφαλοσ", "λυσις", "μενοξενοσ",
   "χαρμιδησ", "ιππιας", "πρωταγορας", "μενων", "κριτιας", "τιμαιοσ",
-  "ερμογονης", "απολλοδωρος", "παμφιλος", "εικρατης",
+  "ερμογονης", "απολλοδωρος", "παμφιλος", "εικρατης", "ιων",
+  "κριτων", "κεβεισ", "σιμμιασ", "ευθυφρων", "κριτωνα", "κεβεισοσ",
+  // include stripped variants without accents for robustness (stripAccents lower)
+  "σωκρατεσ", "κριτωνοσ",
+  // MSS speaker abbreviations used by dialogue editions (ΣΩ, ΙΩΝ, ΚΡ)
+  "σω", "σοκ", "κρ", "κρι",
   // NT / LXX frequent actors
   "ιησους", "πετρος", "παυλος", "ιωαννησ", "μωυσησ", "πιλατος",
   "ηρως", "δαβιδ", "αβρααμ",
 ]);
 
-function isPersonParse(p: Parse): boolean {
+/** Works whose editions carry REAL speaker labels (dramatic dialogues).
+ *  Speaker coloring is gated to these: in epistles, histories and scripture
+ *  a leading proper name is the narrator's subject or a vocative addressee
+ *  ("ΠΑΥΛΟΣ…", ἀδελφοί), never the voice speaking. */
+const DIALOGUE_TLGS = new Set([
+  "tlg0006", // Euripides
+  "tlg0011", // Sophocles
+  "tlg0019", // Aristophanes
+  "tlg0059", // Plato
+  "tlg0062", // Lucian
+  "tlg0085", // Aeschylus
+]);
+
+/** Morpheus marks person names with a "pers" feature token; used only to
+ *  resolve a canonical lemma/label once a word already passed the lexicon
+ *  gate — it no longer qualifies a word on its own. */
+export function isPersonParse(p: Parse): boolean {
   return (
     /\bpers\b/.test(p.f ?? "") ||
     /\bpers\b/.test(p.x ?? "") ||
@@ -453,22 +643,74 @@ function isPersonParse(p: Parse): boolean {
   );
 }
 
-/** How many LEADING words are person names (cap 2). */
-function speakerSpanCount(unit: Unit, ctx: RenderCtx): number {
+function isTitleCase(word: string): boolean {
+  if (!word) return false;
+  const first = word[0];
+  const rest = word.slice(1);
+  const isUpper = first !== first.toLowerCase() && first === first.toUpperCase();
+  if (!isUpper) return false;
+  // rest lowercase or empty (allows ΙΩΝ all-caps to be handled separately)
+  return rest === rest.toLowerCase();
+}
+function isAllCapsGreek(word: string): boolean {
+  return word.length >= 2 && word === word.toUpperCase() && word !== word.toLowerCase();
+}
+
+/**
+ * Speaker test, tightened after false positives in 1 Corinthians:
+ * the form must LOOK like a speaker label (TitleCase name or all-caps MSS
+ * abbreviation such as ΣΩ / ΙΩΝ / ΚΡ) AND its accent-stripped form must be
+ * in the SPEAKER_LEMMAS proper-name lexicon. Previously ANY all-caps token
+ * (ΚΑΙ, ΔΕ…) or any parse carrying a "pers" tag qualified — which coloured
+ * epistle openings like ΠΑΥΛΟΣ κλητὸς ἀπόστολος as a "speaker".
+ */
+function isSpeakerWord(word: string): boolean {
+  const stripped = stripAccents(word);
+  return (
+    (isTitleCase(word) || isAllCapsGreek(word)) &&
+    SPEAKER_LEMMAS.has(stripped)
+  );
+}
+
+/** How many LEADING words are person names (cap 2). Genre-gated: coloring
+ *  only happens for known dialogue works. */
+export function speakerSpanCount(unit: Unit, ctx: RenderCtx): number {
+  if (!ctx.tlg || !DIALOGUE_TLGS.has(ctx.tlg)) return 0;
   const n = Math.min(2, unit.words.length);
   let count = 0;
   for (let i = 0; i < n; i++) {
-    const parses = ctx.morph.get(stripAccents(unit.words[i])) ?? [];
-    if (parses.some(isPersonParse)) count += 1;
+    if (isSpeakerWord(unit.words[i])) count += 1;
     else break;
   }
   return count;
 }
 
-function hashColor(s: string): number {
+export function hashColor(s: string): number {
   let h = 0;
   for (const ch of s) h = (h * 31 + (ch.codePointAt(0) ?? 0)) >>> 0;
   return h % 10;
+}
+
+/** Speaker color for a unit (first leading person name), or null. */
+export function getSpeakerColor(unit: Unit, ctx: RenderCtx): number | null {
+  const n = speakerSpanCount(unit, ctx);
+  if (n === 0) return null;
+  const w = unit.words[0];
+  const parses = ctx.morph.get(stripAccents(w)) ?? [];
+  const hit = parses.find((p) => isPersonParse(p));
+  // fallback canonical is the stripped word itself when pers missing
+  const canonical = stripAccents(hit?.l || w);
+  return hashColor(canonical);
+}
+
+/** Canonical speaker lemma / form for label, or null. */
+export function getSpeakerLabel(unit: Unit, ctx: RenderCtx): string | null {
+  const n = speakerSpanCount(unit, ctx);
+  if (n === 0) return null;
+  const w = unit.words[0];
+  const parses = ctx.morph.get(stripAccents(w)) ?? [];
+  const hit = parses.find((p) => isPersonParse(p));
+  return hit?.l || w;
 }
 
 /** Style one word span as a speaker label with a stable per-name color. */
@@ -524,14 +766,20 @@ function ensureReflowObserver(): IntersectionObserver {
     { rootMargin: "100% 0px" }, // ~one screen ahead
   );
   // web fonts change every width — repack when they settle
-  document.fonts?.ready.then(() => repackAll()).catch(() => {});
+  document.fonts?.ready.then(() => {
+    repackAll();
+    alignAllScansions();
+  }).catch(() => {});
   window.addEventListener("resize", onReflowResize);
   return reflowIO;
 }
 
 function onReflowResize(): void {
   window.clearTimeout(resizeTimer);
-  resizeTimer = window.setTimeout(repackAll, 150);
+  resizeTimer = window.setTimeout(() => {
+    repackAll();
+    alignAllScansions(); // glyph widths changed → re-pin scansion columns
+  }, 150);
 }
 
 /** Undo all splits and re-run the wrap-point pass from scratch. */
@@ -548,7 +796,14 @@ export function repackAll(): void {
 function unsplitRow(row: El): void {
   const blocks = Array.from(row.querySelectorAll(".vline"));
   if (!blocks.length) return;
-  const head = row.querySelector(".prose-head");
+  const head = row.querySelector(".unit-head");
+  const aiOut = row.querySelector(":scope > .ai-out") as El | null;
+  // gather word-aligned scansion spans back in word order
+  const scanUs: HTMLElement[] = [];
+  for (const b of blocks) {
+    b.querySelectorAll<HTMLElement>(".scansion .scan-u")
+      .forEach((s) => scanUs.push(s));
+  }
   const greek = el("div", "greek-line");
   greek.setAttribute("lang", "grc");
   const parseRow = el("div", "parse-row");
@@ -562,7 +817,14 @@ function unsplitRow(row: El): void {
   row.replaceChildren();
   if (head) row.appendChild(head);
   row.appendChild(greek);
+  if (scanUs.length) {
+    const scan = el("div", "scansion");
+    for (const s of scanUs) scan.appendChild(s);
+    row.appendChild(scan);
+    requestAnimationFrame(() => alignAllScansions());
+  }
   row.appendChild(parseRow);
+  if (aiOut) row.appendChild(aiOut);
 }
 
 /** Split one rendered row into per-visual-line blocks using the
@@ -600,31 +862,47 @@ function reflowRow(entry: ReflowEntry): void {
     if (isW) wi += 1;
   }
 
-  const head = row.querySelector(".prose-head");
+  const head = row.querySelector(".unit-head");
+  // Preserve AI output if present (should stay outside vlines, at row end)
+  const aiOut = row.querySelector(":scope > .ai-out") as El | null;
+  // word-aligned scansion: distribute spans into their own visual-line block
+  const scanRow = row.querySelector(":scope > .scansion") as El | null;
+  const scanUs = scanRow
+    ? Array.from(scanRow.querySelectorAll<HTMLElement>(".scan-u"))
+    : [];
   const frag = document.createDocumentFragment();
-  let colCursor = 0;
-  let bucketCursor = 0;
+  // measure container width explicitly to pack correctly (prose paragraphs)
+  void row.clientWidth;
+  void greek.clientWidth;
   for (const g of groups) {
     const block = el("div", "vline");
     const gl = el("div", "greek-line");
     gl.setAttribute("lang", "grc");
     const pr = el("div", "parse-row");
-    while (bucketCursor <= g[g.length - 1]) {
-      for (const n of buckets[bucketCursor]) gl.appendChild(n);
-      bucketCursor += 1;
+    let bScan: El | null = scanUs.length ? el("div", "scansion") : null;
+    if (bScan && scanRow) bScan.dataset.pattern = scanRow.dataset.pattern ?? "";
+    // pack every word index in this visual line
+    for (const idx of g) {
+      for (const n of buckets[idx] ?? []) gl.appendChild(n);
+      const su = scanUs[idx];
+      if (su && bScan) bScan.appendChild(su); // scansion follows its word's line
     }
-    const takeCols = g.length;
-    while (colCursor < takeCols && parseRow.firstElementChild) {
-      pr.appendChild(parseRow.firstElementChild);
-      colCursor += 1;
+    // every visual Greek line gets exactly its parse row beneath
+    for (let k = 0; k < g.length; k++) {
+      const col = parseRow.firstElementChild;
+      if (!col) break;
+      pr.appendChild(col);
     }
     block.appendChild(gl);
+    if (bScan && bScan.childElementCount) block.appendChild(bScan);
     block.appendChild(pr);
     frag.appendChild(block);
   }
   row.replaceChildren();
   if (head) row.appendChild(head);
   row.appendChild(frag);
+  if (aiOut) row.appendChild(aiOut);
+  requestAnimationFrame(() => alignAllScansions());
 }
 
 /** Back-compat alias used by the paste page. */
@@ -635,6 +913,9 @@ export const renderLines = renderUnits;
 export interface Controls {
   root: El;
 }
+
+/** This bar's TTS status subscription (re-bound per renderControls call). */
+let ttsUiUnsub: (() => void) | null = null;
 
 export function renderControls(crumbsText: string, onBack: () => void): Controls {
   const bar = el("nav", "controls");
@@ -667,57 +948,68 @@ export function renderControls(crumbsText: string, onBack: () => void): Controls
   bar.appendChild(expAll);
   bar.appendChild(colAll);
 
-  // --- TTS global Play/Pause (espeak-ng grc) ---
+  // vocabulary book: mode toggle group, stats chip, bulk page marking
+  bar.appendChild(toolbarControls());
+  attachChip(bar);
+
+  // starred lines panel (list lives in bookmarks.ts)
+  const starTitles = new Map<string, string>();
+  loadCatalog().then((catalog) => {
+    for (const author of catalog.authors) {
+      for (const w of author.works) starTitles.set(w.id, w.title);
+    }
+  }).catch(() => {});
+  const starsBtn = el("button", undefined, "★ Saved") as HTMLButtonElement;
+  starsBtn.type = "button";
+  starsBtn.title = "Bookmarked lines";
+  starsBtn.addEventListener("click", () => openStarPanel(starTitles));
+  bar.appendChild(starsBtn);
+
+  // --- TTS global toggle: ONE button, state-labelled ----------------
+  // ▶ Play (idle) ↔ ⏸ Pause (playing) ↔ ▶ Resume (paused). Stop was removed:
+  // pausing covers the toolbar need, and any per-unit 🔊 click restarts from
+  // scratch, so a dedicated Stop button had no job left.
   const ttsStatus = el("span", "tts-status");
   ttsStatus.setAttribute("aria-live", "polite");
-  const playAll = el("button", undefined, "▶ Play") as HTMLButtonElement;
-  playAll.type = "button";
-  playAll.title = "Play all visible Greek (espeak-ng grc, reconstr. ancient)";
-  const pauseBtn = el("button", undefined, "⏸ Pause") as HTMLButtonElement;
-  pauseBtn.type = "button";
-  pauseBtn.title = "Pause TTS";
-  const stopBtn = el("button", undefined, "⏹ Stop") as HTMLButtonElement;
-  stopBtn.type = "button";
-  stopBtn.title = "Stop TTS";
-  pauseBtn.disabled = true;
-  stopBtn.disabled = true;
+  const ttsToggle = el("button", undefined, "▶ Play") as HTMLButtonElement;
+  ttsToggle.type = "button";
   const updateTTSButtons = (): void => {
     const s = getTTSStatus();
     if (s === "playing") {
-      playAll.textContent = "⏸ Pause";
-      pauseBtn.disabled = false;
-      stopBtn.disabled = false;
+      ttsToggle.textContent = "⏸ Pause";
+      ttsToggle.disabled = false;
+      ttsToggle.title = "Pause playback";
       ttsStatus.textContent = "playing…";
     } else if (s === "paused") {
-      playAll.textContent = "▶ Resume";
-      pauseBtn.disabled = true;
-      stopBtn.disabled = false;
+      ttsToggle.textContent = "▶ Resume";
+      ttsToggle.disabled = false;
+      ttsToggle.title = "Resume playback";
       ttsStatus.textContent = "paused";
     } else if (s === "loading") {
-      playAll.textContent = "⏳ Loading";
-      pauseBtn.disabled = true;
-      stopBtn.disabled = false;
+      ttsToggle.textContent = "⏳ Loading";
+      ttsToggle.disabled = true;
       ttsStatus.textContent = "loading voice…";
     } else if (s === "fallback") {
-      playAll.textContent = "▶ Play";
-      pauseBtn.disabled = true;
-      stopBtn.disabled = false;
+      ttsToggle.textContent = "▶ Play";
+      ttsToggle.disabled = false;
       ttsStatus.textContent = "modern approx.";
       ttsStatus.title = "espeak-ng grc unavailable — using Web Speech modern Greek approximation";
     } else if (s === "error") {
-      playAll.textContent = "▶ Play";
-      pauseBtn.disabled = true;
-      stopBtn.disabled = true;
+      ttsToggle.textContent = "▶ Play";
+      ttsToggle.disabled = false;
       ttsStatus.textContent = "TTS error";
     } else {
-      playAll.textContent = "▶ Play";
-      pauseBtn.disabled = true;
-      stopBtn.disabled = true;
+      ttsToggle.textContent = "▶ Play";
+      ttsToggle.disabled = false;
       ttsStatus.textContent = "";
       ttsStatus.title = "";
+      ttsToggle.title = "Play all visible Greek (espeak-ng grc, reconstr. ancient)";
     }
   };
-  onTTSStatus((s, msg) => {
+  // multi-listener TTS bus: drop this bar's previous subscription (route
+  // re-render) before adding the fresh one, then keep the unsubscriber
+  ttsUiUnsub?.();
+  ttsUiUnsub = onTTSStatus((s, msg) => {
     if (s === "fallback" && msg) {
       ttsStatus.textContent = "modern approx.";
       ttsStatus.title = msg;
@@ -726,11 +1018,22 @@ export function renderControls(crumbsText: string, onBack: () => void): Controls
     }
     updateTTSButtons();
   });
-  playAll.addEventListener("click", () => {
+  ttsToggle.addEventListener("click", () => {
     const s = getTTSStatus();
     if (s === "playing") { pauseTTS(); return; }
     if (s === "paused") { resumeTTS(); return; }
-    // collect visible Greek units
+    if (s === "loading") return; // button is disabled anyway
+    // idle / fallback / error: start playing the visible Greek from the top.
+    // Interacting with the toolbar cancels per-unit playback entirely.
+    document
+      .querySelectorAll<HTMLElement>(".tts-speaking")
+      .forEach((r) => markSpeaking(r, false));
+    document.querySelectorAll<HTMLButtonElement>(".tts-unit-btn").forEach((b) => {
+      if (b.textContent === "⏹") {
+        b.textContent = "🔊";
+        b.classList.remove("tts-loading");
+      }
+    });
     const rows = Array.from(document.querySelectorAll<HTMLElement>(".line, .prose-unit"));
     const texts: string[] = [];
     for (const r of rows) {
@@ -747,11 +1050,8 @@ export function renderControls(crumbsText: string, onBack: () => void): Controls
     }
     void speakQueue(texts).catch(() => {});
   });
-  pauseBtn.addEventListener("click", () => pauseTTS());
-  stopBtn.addEventListener("click", () => stopTTS());
-  bar.appendChild(playAll);
-  bar.appendChild(pauseBtn);
-  bar.appendChild(stopBtn);
+  updateTTSButtons();
+  bar.appendChild(ttsToggle);
   bar.appendChild(ttsStatus);
 
   bar.appendChild(lexiconButton());
@@ -803,6 +1103,7 @@ function ensurePanel(): El {
 
 export function hidePanel(): void {
   if (panel) panel.classList.add("hidden");
+  document.body.classList.remove("panel-open");
   document.querySelectorAll(".w.active").forEach((n) => n.classList.remove("active"));
 }
 
@@ -816,6 +1117,36 @@ function openPanel(span: El, word: string, ctx: RenderCtx): void {
 
   body.appendChild(el("h2", undefined, word));
   const parses = ctx.morph.get(stripAccents(word)) ?? [];
+
+  // vocabulary book: mark/unmark this form (stores stripped key + best lemma)
+  const stripped = stripAccents(word);
+  const vrow = el("p", "panel-vocab");
+  const vbtn = el("button", "panel-vocab-btn") as HTMLButtonElement;
+  vbtn.type = "button";
+  const paintV = (): void => {
+    const knownNow = isKnown(stripped);
+    vbtn.textContent = knownNow ? "Unmark" : "Mark known ✓";
+    vbtn.classList.toggle("marked", knownNow);
+    if (knownNow) span.classList.add("vk");
+    else span.classList.remove("vk");
+    vbtn.title = knownNow
+      ? `Remove ${stripped} from your vocabulary`
+      : `Remember ${stripped} (dim it while reading)`;
+  };
+  vbtn.addEventListener("click", () => {
+    if (isKnown(stripped)) unmarkKnown(stripped);
+    else {
+      const bestLemma = parses.length
+        ? parses[rankParses(parses)[0]].l
+        : undefined;
+      markKnown(stripped, bestLemma);
+    }
+    paintV();
+    applyClasses();
+  });
+  paintV();
+  vrow.appendChild(vbtn);
+  body.appendChild(vrow);
 
   if (parses.length === 0) {
     body.appendChild(el("p", "word-form", "No analyses available for this form."));
@@ -855,6 +1186,31 @@ function openPanel(span: El, word: string, ctx: RenderCtx): void {
     }
   }
 
+  // Homeric dictionaries below LSJ — Autenrieth first, then Cunliffe.
+  // Only while reading Homer; lazy letter shards per dictionary; each
+  // section hidden when the lemma has no entry there.
+  if (parses.length) {
+    const bestForDict = parses[rankParses(parses)[0]];
+    const wantWord = word;
+    void (async () => {
+      if (!(await isHomerActive())) return;
+      if (!bestForDict.l) return;
+      const openWord = wantWord;
+      for (const d of HOMER_DICTS) {
+        const entries = await fetchHomerEntries(d.id, [bestForDict.l]);
+        const entry = entries.get(stripAccents(bestForDict.l));
+        if (!entry || !panel || panel.classList.contains("hidden")) continue;
+        if ((body.querySelector("h2")?.textContent ?? "") !== openWord) return;
+        body.appendChild(el("h3", "autenrieth-head",
+          `${d.label} (Homeric)`));
+        const entryDiv = el("div", "entry autenrieth-entry");
+        entryDiv.appendChild(el("span", "lemma", entry.u));
+        entryDiv.appendChild(el("div", "dict-gloss", entry.g));
+        body.appendChild(entryDiv);
+      }
+    })();
+  }
+
   // deep-link into the lexicon drawer, prefilled with the best lemma
   if (parses.length) {
     const best = parses[rankParses(parses)[0]];
@@ -867,4 +1223,5 @@ function openPanel(span: El, word: string, ctx: RenderCtx): void {
   }
 
   p.classList.remove("hidden");
+  document.body.classList.add("panel-open"); // squeeze #app so controls stay clickable
 }

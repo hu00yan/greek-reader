@@ -122,6 +122,13 @@ export function openSettings(opts: SettingsOptions = {}): void {
   fieldsWrap.insertBefore(
     baseUrlHint, baseUrlInp.closest(".ai-field")!.nextSibling);
 
+  const keyHint = pEl(
+    "ai-hint",
+    "anthropic protocol sends the credential as the x-api-key header.",
+  );
+  keyHint.hidden = true;
+  fieldsWrap.insertBefore(keyHint, modelInp.closest(".ai-field")!.nextSibling);
+
   const effHint = pEl(
     "ai-hint",
     "Optional reasoning effort: openai → reasoning_effort, anthropic → " +
@@ -218,6 +225,7 @@ export function openSettings(opts: SettingsOptions = {}): void {
     keyInp.value = p.apiKey;
     modelInp.value = p.model;
     effSel.value = p.effort ?? "";
+    applyProtoVisibility();
   }
 
   function formToProfile(): Profile {
@@ -235,11 +243,46 @@ export function openSettings(opts: SettingsOptions = {}): void {
     };
   }
 
-  profileSel.addEventListener("change", () => {
+  const BUDGETS = ["2048", "8192", "16384"];
+  function applyProtoVisibility(): void {
+    const proto = PROTOCOLS.includes(protoSel.value as Protocol)
+      ? (protoSel.value as Protocol) : "openai";
+    const effField = effSel.closest(".ai-field") as HTMLElement;
+    const effLabel = effField.querySelector("label") as
+      HTMLLabelElement | null;
+    if (proto === "anthropic") {
+      if (effLabel) effLabel.textContent = "Thinking budget";
+      effSel.replaceChildren(...BUDGETS.map((b) => {
+        const o = document.createElement("option");
+        o.value = b; o.textContent = `${b} tokens`;
+        return o;
+      }));
+      keyHint.hidden = false;
+    } else {
+      if (effLabel) {
+        effLabel.textContent = proto === "responses"
+          ? "Reasoning effort (reasoning.effort)"
+          : "Reasoning effort (reasoning_effort)";
+      }
+      const hasEfforts = [...effSel.options].some((o) =>
+        EFFORTS.some((e) => e.v === o.value));
+      if (!hasEfforts) {
+        effSel.replaceChildren(...EFFORTS.map((e) => {
+          const o = document.createElement("option");
+          o.value = e.v as string; o.textContent = e.label;
+          return o;
+        }));
+        effSel.value = currentProfile()?.effort ?? "";
+      }
+      keyHint.hidden = true;
+    }
+  }
+  protoSel.addEventListener("change", () => {
     // persist edits of the previous profile before switching
     commitEdits(false);
     editingId = profileSel.value;
     loadIntoForm();
+    applyProtoVisibility();
   });
 
   function commitEdits(switchAfter: boolean): void {

@@ -85,6 +85,17 @@ export function fromBeta(code: string): string {
   let i = 0;
   while (i < code.length) {
     const ch = code[i];
+    // LSJ length markers: breve ^ and macron _ are purely metrical — drop
+    if (ch === "^" || ch === "_") {
+      i += 1;
+      continue;
+    }
+    if (ch === "-") {
+      // keep hyphen for now — post-process handles stripping/collapse
+      out.push(ch);
+      i += 1;
+      continue;
+    }
     if (ch === "*") {
       let j = i + 1;
       const marks: string[] = [];
@@ -126,5 +137,25 @@ export function fromBeta(code: string): string {
     out.push(ch);
     i += 1;
   }
-  return out.join("").normalize("NFC");
+  let raw = out.join("").normalize("NFC");
+  // --- hyphen / sigma hygiene (fix morph ς-πλ leak) ---
+  // strip leading/trailing hyphens
+  raw = raw.replace(/^-+|-+$/g, "");
+  // hyphenated suffixes (e.g. Ταρκύνιος-πλ) are morphological tags, not lemma part
+  if (raw.includes("-")) {
+    raw = raw.split("-")[0].replace(/^-+|-+$/g, "");
+  }
+  // collapse any lingering ς- artifacts (in case hyphen handling missed)
+  raw = raw.replace(/ς-/g, "σ");
+  // ensure ς appears only as final character (medial ς → σ)
+  if (raw.includes("ς")) {
+    if (raw.endsWith("ς")) {
+      raw = raw.slice(0, -1).replace(/ς/g, "σ") + "ς";
+    } else {
+      raw = raw.replace(/ς/g, "σ");
+    }
+  }
+  // final hyphen strip
+  raw = raw.replace(/^-+|-+$/g, "");
+  return raw;
 }

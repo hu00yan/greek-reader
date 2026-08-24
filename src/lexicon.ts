@@ -7,7 +7,7 @@
 // converted via fromBeta before lookup; raw input is always tried too.
 // Keyboard: Enter focuses first result; ArrowUp/Down navigate; Esc closes.
 import { fromBeta } from "./betacode";
-import { fetchJSON, loadMorph, loadGloss, stripAccents,
+import { fetchJSON, loadCatalog, loadMorph, loadGloss, stripAccents,
   type Gloss, type Parse } from "./api";
 
 type El = HTMLElement;
@@ -21,12 +21,93 @@ const el = (tag: string, cls?: string, text?: string): El => {
 // TLG Beta Code markers; also plain digits-as-homonym style like "o9eos"
 const BETA_RE = /[*()\\\/+=|\d]/;
 
+// ---- Homeric dictionaries: Autenrieth + Cunliffe ---------------------------
+// Shards keyed by strip_accents(lemma) -> {u, g, src}; same first-letter
+// sharding as gloss shards. Loaded ONLY while reading Homer.
+export interface HomerEntry {
+  u: string;
+  g: string;
+  src: string;
+}
+
+export const HOMER_DICTS = [
+  { id: "autenrieth", label: "Autenrieth", dir: "data/dicts/homer" },
+  { id: "cunliffe", label: "Cunliffe", dir: "data/dicts/cunliffe" },
+] as const;
+
+export type HomerDictId = (typeof HOMER_DICTS)[number]["id"];
+
+let homerActiveCache: boolean | null = null;
+const homerShards = new Map<string, Record<string, HomerEntry> | null>();
+export let dictSource: "lsj" | HomerDictId = "lsj";
+
+export function setDictSource(src: "lsj" | HomerDictId): void {
+  dictSource = src;
+}
+
+function invalidateHomerContext(): void {
+  homerActiveCache = null;
+}
+if (!(window as unknown as Record<string, unknown>).__homerCtxHook) {
+  (window as unknown as Record<string, unknown>).__homerCtxHook = true;
+  window.addEventListener("hashchange", invalidateHomerContext);
+}
+
+/** True when the CURRENT route is a work by Homer (catalog author check). */
+export async function isHomerActive(): Promise<boolean> {
+  if (homerActiveCache !== null) return homerActiveCache;
+  const m = location.hash.replace(/^#\/?/, "")
+    .match(/^(tlg\d{4})\/([^/?]+)/);
+  let active = false;
+  if (m) {
+    try {
+      const catalog = await loadCatalog();
+      const author = catalog.authors.find((a) => a.tlg === m[1]);
+      const work = author?.works.find((w) => w.id === m[2]);
+      active = !!author && !!work && /homer/i.test(author.name);
+    } catch { /* catalog unavailable — treat as non-Homer */ }
+  }
+  homerActiveCache = active;
+  return active;
+}
+
+/** Lazy letter-shard fetch per Homeric dictionary. Non-Homer routes return
+ *  an empty map WITHOUT any network request (letter-set skipped). */
+export async function fetchHomerEntries(
+  dictId: HomerDictId,
+  lemmas: string[],
+): Promise<Map<string, HomerEntry>> {
+  const out = new Map<string, HomerEntry>();
+  if (!(await isHomerActive())) return out;
+  const dir = HOMER_DICTS.find((d) => d.id === dictId)!.dir;
+  const letters = Array.from(new Set(
+    lemmas.map((l) => firstBetaLetter(stripAccents(l)))
+      .filter((l) => /^[a-z]$/.test(l)),
+  ));
+  await Promise.all(letters.map(async (letter) => {
+    const cacheKey = `${dictId}:${letter}`;
+    if (!homerShards.has(cacheKey)) {
+      const shard = await fetchJSON<Record<string, HomerEntry> | null>(
+        `${dir}/${letter}.json`,
+      ).catch(() => null);
+      homerShards.set(cacheKey, shard);
+    }
+  }));
+  for (const lemma of lemmas) {
+    const key = stripAccents(lemma);
+    const letter = firstBetaLetter(key);
+    const entry = homerShards.get(`${dictId}:${letter}`)?.[key];
+    if (entry) out.set(key, entry);
+  }
+  return out;
+}
+
 let drawer: El | null = null;
 let input: HTMLInputElement | null = null;
 let hint: El | null = null;
 let results: El | null = null;
 let searchSeq = 0;
-
+let srcFilter: El | null = null;
 function ensureDrawer(): El {
   if (drawer) return drawer;
   drawer = el("aside", "drawer left hidden");
@@ -50,6 +131,40 @@ function ensureDrawer(): El {
   hint.setAttribute("aria-live", "polite");
   drawer.appendChild(hint);
 
+  // source filter [LSJ | Autenrieth | Cunliffe] — Homeric dicts only while
+  // reading Homer
+  srcFilter = el("div", "lex-src-filter");
+  const lsjBtn = el("button", "lex-src-btn", "LSJ") as HTMLButtonElement;
+  lsjBtn.type = "button";
+  const paint = (): void => {
+    lsjBtn.setAttribute("aria-pressed", String(dictSource === "lsj"));
+    for (const d of HOMER_DICTS) {
+      const btn = srcFilter!.querySelector<HTMLElement>(
+        `.lex-src-btn[data-src="${d.id}"]`);
+      btn?.setAttribute("aria-pressed", String(dictSource === d.id));
+    }
+  };
+  lsjBtn.addEventListener("click", () => {
+    setDictSource("lsj"); paint(); void runSearch();
+  });
+  srcFilter.appendChild(lsjBtn);
+  const homButtons: HTMLButtonElement[] = [];
+  for (const d of HOMER_DICTS) {
+    const b = el("button", "lex-src-btn lex-src-homeric",
+      d.label) as HTMLButtonElement;
+    b.type = "button";
+    b.dataset.src = d.id;
+    b.classList.add("hidden"); // revealed by refreshSourceFilter()
+    b.addEventListener("click", () => {
+      if (b.classList.contains("hidden")) return;
+      setDictSource(d.id); paint(); void runSearch();
+    });
+    srcFilter.appendChild(b);
+    homButtons.push(b);
+  }
+  paint();
+  drawer.appendChild(srcFilter);
+
   results = el("div", "lex-results");
   drawer.appendChild(results);
 
@@ -67,9 +182,25 @@ function ensureDrawer(): El {
   return drawer;
 }
 
+async function refreshSourceFilter(): Promise<void> {
+  const active = await isHomerActive();
+  for (const d of HOMER_DICTS) {
+    const btn = srcFilter?.querySelector<HTMLElement>(
+      `.lex-src-btn[data-src="${d.id}"]`);
+    if (!btn) continue;
+    btn.classList.toggle("hidden", !active);
+  }
+  if (!active && dictSource !== "lsj") {
+    setDictSource("lsj");
+    void runSearch();
+  }
+}
+
 export function openLexicon(prefill?: string): void {
   const d = ensureDrawer();
   d.classList.remove("hidden");
+  document.body.classList.add("lexicon-open");
+  void refreshSourceFilter();
   if (prefill && input) {
     input.value = prefill;
   }
@@ -82,12 +213,20 @@ export function openLexicon(prefill?: string): void {
 
 export function closeLexicon(): void {
   drawer?.classList.add("hidden");
+  document.body.classList.remove("lexicon-open");
 }
 
 export function toggleLexicon(): void {
   if (!drawer || drawer.classList.contains("hidden")) openLexicon();
   else closeLexicon();
 }
+
+// Close on Escape
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && drawer && !drawer.classList.contains("hidden")) {
+    closeLexicon();
+  }
+});
 
 export function lexiconButton(label = "Lexicon"): El {
   const b = el("button", undefined, label) as HTMLButtonElement;
@@ -128,6 +267,56 @@ async function runSearch(): Promise<void> {
       el("p", "lex-hint-empty",
         "Type a Greek form (exact or accent-less) or an LSJ headword prefix."),
     );
+    return;
+  }
+
+  if (dictSource !== "lsj") {
+    const queries = Array.from(new Set(
+      [
+        q,
+        converted ?? "",
+        stripAccents(q),
+        converted ? stripAccents(converted) : "",
+      ].filter((x): x is string => !!x),
+    ));
+    let homerHits: Array<{ lemma: string; entry: HomerEntry }> = [];
+    for (const qq of queries) {
+      const stripped = stripAccents(qq);
+      const letter = firstBetaLetter(stripped);
+      const cacheKey = `${dictSource}:${letter}`;
+      if (!/^[a-z]$/.test(letter)) continue;
+      if (!homerShards.has(cacheKey)) {
+        const dir = HOMER_DICTS.find((d) => d.id === dictSource)!.dir;
+        const shard = await fetchJSON<Record<string, HomerEntry> | null>(
+          `${dir}/${letter}.json`,
+        ).catch(() => null);
+        homerShards.set(cacheKey, shard);
+      }
+      const shard = homerShards.get(cacheKey);
+      if (!shard) continue;
+      for (const k of Object.keys(shard)
+        .filter((k) => k.startsWith(stripped))
+        .sort()
+        .slice(0, 25)) {
+        homerHits.push({ lemma: shard[k]?.u ?? k, entry: shard[k] });
+      }
+    }
+    if (seq !== searchSeq) return;
+    homerHits = homerHits.slice(0, 40);
+    for (const h of homerHits) {
+      const card = el("button", "lex-card") as HTMLButtonElement;
+      card.type = "button";
+      card.appendChild(el("span", "lex-src", "Homeric"));
+      card.appendChild(el("div", "lemma", h.lemma || "?"));
+      card.appendChild(el("div", "gloss", h.entry.g));
+      results!.appendChild(card);
+    }
+    if (!homerHits.length) {
+      results!.appendChild(
+        el("p", "lex-hint-empty",
+          `No Homeric dictionary matches for \u201c${converted ?? q}\u201d.`),
+      );
+    }
     return;
   }
 

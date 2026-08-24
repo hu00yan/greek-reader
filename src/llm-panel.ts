@@ -1,11 +1,11 @@
 // AI assist UI wiring:
 //   ⚙ gear button + active-profile dropdown (fixed, top-right) → settings
 //   per-word "AI 精译 / AI Translate" button inside the word side panel
-//   small per-row "AI" button at the end of every line/unit (reader + paste)
-//
-// render.ts stays untouched: a MutationObserver sweeps the DOM for
-// .side-panel/.panel-body and .line/.prose-unit containers and attaches
-// buttons idempotently (data-ai attributes prevent re-attachment loops).
+//   per-unit header "AI" button is created deterministically by render.ts
+//   inside .unit-head .unit-actions alongside TTS (right-aligned flex gap).
+//   This sweeper only binds handlers to those header buttons and the word
+//   side panel; it no longer injects buttons mid-unit via MutationObserver
+//   at row end (removed per layout fix — deterministic header placement).
 //
 // Anti-runaway invariant: runAI() asserts event.isTrusted — every LLM call
 // originates from ONE real user click; there is no bulk/loop path.
@@ -85,6 +85,20 @@ function installGear(): void {
   document.body.appendChild(wrap);
 }
 
+/**
+ * Gear placement: INSIDE the reader controls flow (last child of .controls),
+ * never absolutely positioned over other controls. Routes without a controls
+ * bar (home / paste / about) keep the compact fixed fallback. Runs on every
+ * sweeper pass so late-rendered bars pick the gear up.
+ */
+function placeGearInControls(): void {
+  const wrap = document.getElementById("ai-gear-wrap");
+  if (!wrap) return;
+  const bar = document.querySelector(".controls");
+  if (bar && !bar.contains(wrap)) bar.appendChild(wrap);
+  wrap.classList.toggle("fallback", !bar);
+}
+
 function hintIfUnconfigured(): string | undefined {
   return isReady()
     ? undefined
@@ -98,6 +112,7 @@ let scheduled = false;
 function installSweeper(): void {
   const sweep = (): void => {
     scheduled = false;
+    placeGearInControls();
     attachWordButton();
     attachRowButtons();
   };
@@ -141,31 +156,85 @@ function attachWordButton(): void {
   body.appendChild(block);
 }
 
-/** Every reader/paste line or prose unit gets a tiny AI button at row end. */
+/** Every reader/paste line or prose unit gets a tiny AI button in its header
+ *  .unit-head .unit-actions (right-aligned, alongside TTS). Deterministic
+ *  placement, never between greek lines and parse rows. */
 function attachRowButtons(): void {
-  const rows = document.querySelectorAll(
-    ".line:not([data-ai]), .prose-unit:not([data-ai])",
-  );
+  const rows = document.querySelectorAll<HTMLElement>(".line, .prose-unit");
   for (const row of rows) {
-    row.setAttribute("data-ai", "row");
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "ai-btn ai-btn-line";
-    btn.textContent = "AI";
-    btn.title = "AI 精译 / AI Translate this line";
-    btn.addEventListener("click", (ev) => {
+    const header = row.querySelector(".unit-head");
+    if (!header) continue;
+    const actions = header.querySelector(".unit-actions");
+    if (!actions) continue;
+    let aiBtn = actions.querySelector(".ai-btn-line") as HTMLButtonElement | null;
+    // Ensure exactly one AI button exists in header (create if missing for paste route)
+    if (!aiBtn) {
+      aiBtn = document.createElement("button");
+      aiBtn.type = "button";
+      aiBtn.className = "ai-btn ai-btn-line";
+      aiBtn.textContent = "AI";
+      aiBtn.title = "AI Translate this line";
+      actions.appendChild(aiBtn);
+    }
+    if (aiBtn.hasAttribute("data-ai-bound")) continue;
+    aiBtn.setAttribute("data-ai-bound", "1");
+    aiBtn.addEventListener("click", (ev) => {
       assertTrusted(ev);
-      // fresh output area per click, below the parse cards
       const old = row.querySelector(":scope > .ai-out");
       if (old) old.remove();
       const out = makeOutput();
       row.appendChild(out.root);
       const ctx = contextFromRow(row as HTMLElement);
-      void runAI(btn, out, ctx);
+      void runAI(aiBtn!, out, ctx);
     });
-    row.appendChild(btn);
+  }
+  // Cleanup legacy orphan AI buttons that were direct children of row (old mid-unit injection)
+  for (const orphan of document.querySelectorAll<HTMLElement>(".line > .ai-btn, .prose-unit > .ai-btn")) {
+    const row = orphan.closest(".line, .prose-unit") as HTMLElement | null;
+    if (!row) { orphan.remove(); continue; }
+    const hasHeaderAi = row.querySelector(".unit-head .ai-btn-line");
+    if (hasHeaderAi && hasHeaderAi !== orphan) {
+      orphan.remove();
+    } else {
+      const actions = row.querySelector(".unit-actions");
+      if (actions && !actions.contains(orphan)) actions.appendChild(orphan);
+      else if (!actions) orphan.remove();
+    }
+  }
+  // Also clean any duplicate AI buttons inside header (ensure exactly one)
+  for (const header of document.querySelectorAll<HTMLElement>(".unit-head")) {
+    const btns = Array.from(header.querySelectorAll<HTMLElement>(".ai-btn-line"));
+    if (btns.length > 1) {
+      for (let i = 1; i < btns.length; i++) btns[i].remove();
+    }
+    const tts = Array.from(header.querySelectorAll<HTMLElement>(".tts-unit-btn"));
+    if (tts.length > 1) {
+      for (let i = 1; i < tts.length; i++) tts[i].remove();
+    }
   }
 }
+
+// Expose helper for render.ts fallback (when render creates AI button before sweeper binds)
+;(globalThis as unknown as Record<string, unknown>).__aiRowHelper = (
+  btn: HTMLButtonElement,
+  row: HTMLElement,
+  _unit: unknown,
+) => {
+  if (btn.hasAttribute("data-ai-bound")) return;
+  btn.setAttribute("data-ai-bound", "1");
+  btn.addEventListener("click", (ev) => {
+    assertTrusted(ev);
+    const old = row.querySelector(":scope > .ai-out");
+    if (old) old.remove();
+    const out = makeOutput();
+    row.appendChild(out.root);
+    const ctx = contextFromRow(row as HTMLElement);
+    void runAI(btn, out, ctx);
+  });
+  // Trigger immediate binding check
+  // Also ensure orphan cleanup runs
+  attachRowButtons();
+};
 
 /** C2 enforcement point: refuse synthetic/programmatic clicks. */
 function assertTrusted(ev: Event): void {

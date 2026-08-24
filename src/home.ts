@@ -2,7 +2,8 @@
 // Matching is a case- and accent-insensitive substring test over author
 // names and work titles (stripAccents is the betacode-style normalizer
 // shared with the morphology index). "/" focuses the search box.
-import { loadCatalog, stripAccents, type CatalogAuthor } from "./api";
+import { loadCatalog, fetchJSON, stripAccents, type CatalogAuthor } from "./api";
+import { fromBeta } from "./betacode";
 import { lexiconButton } from "./lexicon";
 import { themeControl } from "./theme";
 import { aboutLink } from "./about";
@@ -35,10 +36,25 @@ export function renderHome(app: HTMLElement): void {
   searchWrap.appendChild(input);
   searchWrap.appendChild(themeControl());
   searchWrap.appendChild(lexiconButton());
-  const hint = el("kbd", undefined, "/");
-  hint.title = "Press / to focus search";
-  searchWrap.appendChild(hint);
+  // no visible "/" button here — the shortcut lives in the document
+  // keydown listener below; a chip invited pointless clicking.
   app.appendChild(searchWrap);
+
+  // ---- starter suggestions (routes verified against catalog.json) ----
+  const startLink = (text: string, hash: string): HTMLAnchorElement => {
+    const a = el("a", "starter-link", text) as HTMLAnchorElement;
+    a.href = hash;
+    return a;
+  };
+  const starters = el("p", "starters");
+  starters.append("Not sure where to start? Try the ");
+  starters.appendChild(startLink("Iliad", "#/tlg0012/iliad"));
+  starters.append(", Xenophon’s ");
+  starters.appendChild(startLink("Anabasis", "#/tlg0032/anabasis"));
+  starters.append(", or Plato’s ");
+  starters.appendChild(startLink("Symposium", "#/tlg0059/symposium"));
+  starters.append(".");
+  app.appendChild(starters);
 
   // "/" focuses search (until the home view is torn down)
   const onKey = (e: KeyboardEvent): void => {
@@ -120,7 +136,9 @@ export function renderHome(app: HTMLElement): void {
       a.title.localeCompare(b.title, undefined, { numeric: true }));
   }
 
-  /** Live filter: substring match on author name OR work title. */
+  /** Live filter: substring match on author name OR work title, plus a
+   *  lazy full-text pass over the translation corpus (search-index.json,
+   *  built by scripts/build-search-index.py). */
   function applyFilter(): void {
     const q = stripAccents(input.value.trim());
     let nAuthors = 0;
@@ -147,6 +165,8 @@ export function renderHome(app: HTMLElement): void {
       ? `${nAuthors} author${nAuthors === 1 ? "" : "s"} · ` +
         `${nWorks} work${nWorks === 1 ? "" : "s"} matching “${input.value.trim()}”`
       : `${nAuthors} authors · ${nWorks} works`;
+    void updateTextHits(q);
+    void updateGrcHits(input.value);
   }
 
   let debounce = 0;
@@ -154,4 +174,200 @@ export function renderHome(app: HTMLElement): void {
     window.clearTimeout(debounce);
     debounce = window.setTimeout(applyFilter, 60);
   });
+
+  // ---- full-text search over translations (lazy, build-time index) ----
+  // Index shape (scripts/build-search-index.py):
+  //   {v:1, w:["1-corinthians",...], e:[[widIdx,"10.1","snippet"], ...]}
+  // Snippets are pre-normalized (lowercase, punctuation -> space), so the
+  // query is normalized identically and substring-matched. Loaded ONCE on
+  // the first qualifying search (query length > 3); filtering is a plain
+  // array scan over ~40k snippets.
+  interface SearchIndex {
+    v: number;
+    w: string[];
+    e: Array<[number, string, string]>;
+  }
+  let idxPromise: Promise<SearchIndex | null> | null = null;
+  let hitsToken = 0;
+  const hits = el("div", "text-hits");
+  hits.hidden = true;
+  const catalogTitles = new Map<string, string>();
+  const normEn = (s: string): string =>
+    s
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}_\s]+/gu, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  const workTlg = new Map<string, string>();
+  loadCatalog().then((catalog) => {
+    for (const author of catalog.authors) {
+      for (const w of author.works) {
+        workTlg.set(w.id, author.tlg);
+        catalogTitles.set(w.id, w.title);
+      }
+    }
+  }).catch(() => {});
+
+  function ensureIndex(): Promise<SearchIndex | null> {
+    if (!idxPromise) {
+      idxPromise = fetchJSON<SearchIndex>("data/search-index.json").catch(
+        () => null,
+      );
+    }
+    return idxPromise;
+  }
+
+  /** Render up to 8 "In translations:" hits below the catalog matches. */
+  async function updateTextHits(q: string): Promise<void> {
+    const nq = normEn(q);
+    if (nq.length <= 3) {
+      hits.hidden = true;
+      hits.replaceChildren();
+      return;
+    }
+    const token = ++hitsToken;
+    const idx = await ensureIndex();
+    if (token !== hitsToken) return; // stale keystroke
+    if (!idx) {
+      app.appendChild(hits);
+      hits.replaceChildren(
+        el("p", "text-hits-note", "Text search unavailable."),
+      );
+      hits.hidden = false;
+      return;
+    }
+    const found: Array<{ wid: string; ref: string; snip: string }> = [];
+    let total = 0;
+    for (const [wi, ref, sn] of idx.e) {
+      const at = sn.indexOf(nq);
+      if (at < 0) continue;
+      total += 1;
+      if (found.length < 8) {
+        const wid = idx.w[wi];
+        if (!workTlg.has(wid)) continue;
+        found.push({ wid, ref, snip: window_(sn, at, nq.length) });
+      }
+    }
+    hits.replaceChildren();
+    if (!total) {
+      hits.hidden = true;
+      return;
+    }
+    const head = el("h3", "text-hits-head",
+      `In translations: ${total.toLocaleString()} passage` +
+      `${total === 1 ? "" : "s"} containing “${input.value.trim()}”`);
+    head.title = "Full-text matches in translation corpus";
+    hits.appendChild(head);
+    const list = el("div", "text-hits-list");
+    for (const f of found) {
+      const tlg = workTlg.get(f.wid)!;
+      const a = el("a", "text-hit") as HTMLAnchorElement;
+      a.href = `#/${tlg}/${f.wid}`;
+      const title = catalogTitles.get(f.wid) ?? f.wid;
+      a.appendChild(el("span", "hit-title", title));
+      a.appendChild(el("span", "hit-ref", ` ${f.ref}`));
+      a.appendChild(el("span", "hit-snippet", f.snip));
+      list.appendChild(a);
+    }
+    hits.appendChild(list);
+    app.appendChild(hits); // force bottom-most position, below work matches
+    hits.hidden = false;
+  }
+  /** ±60-char context window around the first match. */
+  function window_(sn: string, at: number, len: number): string {
+    const start = Math.max(0, at - 55);
+    const end = Math.min(sn.length, at + len + 65);
+    const body = sn.slice(start, end);
+    return (start > 0 ? "…" : "") + body + (end < sn.length ? "…" : "");
+  }
+
+  // ---- Greek full-text WORK search (build-time inverted index) ----
+  // Index (scripts/build_grc_index.py):
+  //   {v,g:[tlg...],w:[workId...],e:{ "<norm>": [totalN, [[widIdx,"ref"]..]] }}
+  // Keys are stripAccents-normalized with final sigma folded (ς→σ). Input may
+  // be Unicode Greek OR betacode (lo/gos, qeo/s) — converted via fromBeta.
+  interface GrcIndex {
+    v: number;
+    g: string[];
+    w: string[];
+    e: Record<string, [number, Array<[number, string]>]>;
+  }
+  let grcIdxPromise: Promise<GrcIndex | null> | null = null;
+  let grcToken = 0;
+  const grcHits = el("div", "text-hits grc-hits");
+  grcHits.hidden = true;
+  const GRC_RE = /[\u0370-\u03ff\u1f00-\uffff]/;
+  // ascii letters adjacent to betacode diacritic markers (postfix / \ = | : ?
+  // or prefix ( ) * capital marker)
+  const BETACODE_MARK_RE = /[a-z][/\\=|:?]|[(*][a-z]/i;
+
+  function ensureGrcIndex(): Promise<GrcIndex | null> {
+    if (!grcIdxPromise) {
+      grcIdxPromise = fetchJSON<GrcIndex>("data/search-index-grc.json").catch(
+        () => null,
+      );
+    }
+    return grcIdxPromise;
+  }
+
+  async function updateGrcHits(rawQ: string): Promise<void> {
+    let q = rawQ.trim();
+    if (!q) {
+      grcHits.hidden = true;
+      return;
+    }
+    if (!GRC_RE.test(q)) {
+      // try betacode → unicode when ascii diacritic markers present
+      if (BETACODE_MARK_RE.test(q)) {
+        q = fromBeta(q);
+      }
+      if (!GRC_RE.test(q)) {
+        grcHits.hidden = true;
+        grcHits.replaceChildren();
+        return;
+      }
+    }
+    // stripAccents folds accents AND final sigma (λόγος → λογοσ)
+    const nq = stripAccents(q);
+    const token = ++grcToken;
+    const idx = await ensureGrcIndex();
+    if (token !== grcToken) return; // stale keystroke
+    if (!idx) {
+      app.appendChild(grcHits);
+      grcHits.replaceChildren(
+        el("p", "text-hits-note", "Greek text search unavailable."),
+      );
+      grcHits.hidden = false;
+      return;
+    }
+    // exact match first, then final-sigma-stripped variant
+    let hit = idx.e[nq];
+    if (!hit && nq.endsWith("σ")) hit = idx.e[nq.slice(0, -1)];
+    if (!hit) hit = idx.e[`${nq}σ`];
+    grcHits.replaceChildren();
+    app.appendChild(grcHits); // keep below the English "In translations" hits
+    if (!hit || !hit[1].length) {
+      grcHits.hidden = true;
+      return;
+    }
+    const shown = Math.min(8, hit[1].length);
+    const head = el("h3", "text-hits-head",
+      `In Greek texts: ${hit[1].length.toLocaleString()} work${hit[1].length === 1 ? "" : "s"} containing “${rawQ.trim()}”`);
+    head.title = `≈${hit[0].toLocaleString()} total occurrences`;
+    grcHits.appendChild(head);
+    const list = el("div", "text-hits-list");
+    for (const [widIdx, ref] of hit[1].slice(0, shown)) {
+      const wid = idx.w[widIdx];
+      const tlg = workTlg.get(wid);
+      if (!tlg) continue;
+      const a = el("a", "text-hit grc-hit") as HTMLAnchorElement;
+      a.href = `#/${tlg}/${wid}`;
+      a.appendChild(el("span", "hit-title", catalogTitles.get(wid) ?? wid));
+      a.appendChild(el("span", "hit-ref",
+        ref ? ` — first seen at ${ref}` : ""));
+      list.appendChild(a);
+    }
+    grcHits.appendChild(list);
+    grcHits.hidden = false;
+  }
 }
