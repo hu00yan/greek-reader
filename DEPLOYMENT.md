@@ -43,6 +43,25 @@ URL: **`https://interlinear-greek.pages.dev`** (production)
 > always deploy from repo root as above. Do NOT pass a positional directory:
 > `wrangler pages deploy .` repo-root-scans caches (.cache-trans >25MiB) and fails.
 
+#### Git-push auto-deploy (GitHub Action, since 2026-08-24)
+
+`.github/workflows/deploy.yml` deploys to Cloudflare Pages on every push to
+`main` (and manual `workflow_dispatch`). Concurrency: one deploy per ref,
+new runs cancel in-progress ones.
+
+One-time setup — add BOTH repo secrets (Settings → Secrets and variables →
+Actions → New repository secret; names exactly as below, values never
+committed):
+
+- `CLOUDFLARE_API_TOKEN` — a token with **Cloudflare Pages: Edit** permission.
+- `CLOUDFLARE_ACCOUNT_ID` — shown on the Cloudflare dashboard under
+  Workers & Pages → Overview (right-hand "Account details").
+
+Until both secrets exist the workflow exits early with a warning and the job
+stays green — pushes are simply not deployed. The build uses the slim mode
+(`DEPLOY_TARGET=cf`, no sidecars); the wrangler step intentionally deploys
+from the repo root so `functions/api/*` ship alongside `dist/`.
+
 #### Build modes (since 2026-08-24)
 
 | mode | command | sidecars | use |
