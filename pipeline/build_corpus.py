@@ -34,6 +34,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import xml.etree.ElementTree as ET
 
@@ -54,7 +55,8 @@ UNITS = os.path.join(CACHE, "units")
 SRC = os.path.join(CACHE, "texts")
 FAILLOG = os.path.join(HERE, "ingest-failures.md")
 
-CRUNCH_CHUNK = 5000          # forms fed to cruncher per subprocess
+CRUNCH_FEED = 2000           # forms per stdin write slice (one long-lived
+                             # cruncher process handles the whole stage)
 PROSE_MAX_WORDS = 60         # interlinear display chunk ceiling
 PART_TARGET_BYTES = 900_000  # flush a part file near this size (<1MB UTF-8)
 
@@ -662,43 +664,73 @@ def parse_record(rec: str) -> tuple[str, str, str, str] | None:
 
 
 def run_cruncher(beta_forms: list[str]) -> dict[str, list]:
-    """Echo-sync batch (same protocol as build_work.py), compact tuples."""
+    """Long-lived streaming crunch (protocol of crunch_cached_parts._crunch_all):
+    ONE cruncher process per call, stdin streamed concurrently with stdout
+    consumption. Echo-sync by O(1) dict-index jump: rejected forms echo only
+    to stderr (never stdout), so the old positional WINDOW walk desynced
+    permanently and silently lost every parse in batches that opened with a
+    few rejects. Output contract unchanged: beta form -> [parse tuples]."""
+    t0 = time.time()
     unique = list(dict.fromkeys(beta_forms))
+    n = len(unique)
     buckets: dict[str, list] = {f: [] for f in unique}
     env = dict(os.environ, MORPHLIB=MORPHLIB)
-    proc = subprocess.run([CRUNCHER], input="\n".join(unique) + "\n",
-                          capture_output=True, text=True, env=env)
+    proc = subprocess.Popen(
+        [CRUNCHER], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, text=True, encoding="utf-8",
+        errors="replace", env=env)
+    stdin_f, stdout_f, stderr_f = proc.stdin, proc.stdout, proc.stderr
+
+    def feed() -> None:
+        try:
+            for i in range(0, n, CRUNCH_FEED):
+                stdin_f.write("\n".join(unique[i:i + CRUNCH_FEED]) + "\n")
+                stdin_f.flush()
+        except BrokenPipeError:
+            pass
+        finally:
+            try:
+                stdin_f.close()
+            except BrokenPipeError:
+                pass
+
+    def drain_err() -> None:
+        stderr_f.read()
+
+    threading.Thread(target=feed, daemon=True).start()
+    threading.Thread(target=drain_err, daemon=True).start()
+
+    beta_index = {b: i for i, b in enumerate(unique)}
     ptr = -1
-    WINDOW = 3
-    for raw in proc.stdout.splitlines():
+    seen = 0
+    last_report = t0
+    for raw in stdout_f:
         line = raw.strip()
         if not line or line.startswith(":"):
             continue
-        nxt = ptr + 1
-        if nxt < len(unique) and line == unique[nxt]:
-            ptr = nxt          # clean echo
-            continue
-        if nxt < len(unique):
-            hit = -1
-            for off in range(1, WINDOW + 1):
-                j = nxt + off
-                if j < len(unique) and line == unique[j]:
-                    hit = j
-                    break
-            if hit >= 0:
-                ptr = hit      # skipped some unechoed inputs -> no parses
-                continue
-            if any(line.startswith(u) or u.startswith(line)
-                   for u in unique[nxt:nxt + WINDOW]):
-                continue       # mangled partial echo; treat as no parses
+        idx = beta_index.get(line)
+        if idx is not None and idx > ptr:
+            ptr = idx
         if ptr >= 0:
             for rec in re.findall(r"<NL>(.*?)</NL>", line):
                 parsed = parse_record(rec)
                 if parsed:
                     buckets[unique[ptr]].append(parsed)
+        if ptr + 1 > seen:
+            seen = ptr + 1
+            now = time.time()
+            if seen == n or now - last_report >= 15:
+                rate = seen / max(now - t0, 0.001)
+                print(f"[morph] {seen}/{n} ({now - t0:.0f}s, {rate:.0f}/s)",
+                      flush=True)
+                last_report = now
+
+    stdout_f.close()
+    proc.wait()
     unparsed = sum(1 for f in unique if not buckets[f])
     print(f"cruncher: {len(unique)} forms, "
-          f"{len(unique) - unparsed} analysed, {unparsed} unparsed",
+          f"{len(unique) - unparsed} analysed, {unparsed} unparsed "
+          f"in {time.time() - t0:.1f}s rc={proc.returncode}",
           flush=True)
     return buckets
 
@@ -707,16 +739,11 @@ def iter_unit_lines():
     for name in sorted(os.listdir(UNITS)):
         if name.endswith(".ndjson"):
             with open(os.path.join(UNITS, name), encoding="utf-8") as fh:
-                yield name, line_from(fh)
-
-
-def line_from(fh):
-    for line in fh:
-        yield line
+                for line in fh:
+                    yield name, line
 
 
 def stage_morph() -> None:
-    t0 = time.time()
     surfaces: set[str] = set()
     n_tokens = 0
     for _, line in iter_unit_lines():
@@ -733,14 +760,9 @@ def stage_morph() -> None:
     print(f"[morph] {n_tokens} tokens, {len(surfaces)} surface forms, "
           f"{len(unique_beta)} unique analysable forms", flush=True)
 
-    analyses: dict[str, list] = {}
-    nch = (len(unique_beta) + CRUNCH_CHUNK - 1) // CRUNCH_CHUNK
-    for ci in range(nch):
-        chunk = unique_beta[ci * CRUNCH_CHUNK:(ci + 1) * CRUNCH_CHUNK]
-        analyses.update(run_cruncher(chunk))
-        done = min((ci + 1) * CRUNCH_CHUNK, len(unique_beta))
-        print(f"[morph] chunk {ci + 1}/{nch} ({done} forms, "
-              f"{time.time() - t0:.0f}s)", flush=True)
+    # one long-lived cruncher process streams ALL forms (perf contract:
+    # never spawn per chunk); progress lines come from run_cruncher
+    analyses = run_cruncher(unique_beta)
 
     # merge into accent-stripped keys, dedup parse tuples
     tables: dict[str, dict[str, dict]] = {}
