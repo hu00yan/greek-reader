@@ -1,8 +1,9 @@
 // Hash routes own their asynchronous work. Only the current route may paint.
 import "./style.css";
-import { loadCatalog, loadPart, type CatalogWork, type Unit } from "./api";
+import { loadCatalog, loadPart, type CatalogAuthor, type CatalogWork, type Unit } from "./api";
 import { genreFor, hidePanel, mergeCtx, prepare, renderControls, renderUnits,
-  setProsodyWorkId, tallyLemmas, type RenderCtx } from "./render";
+  setProsodyWorkId, tallyLemmas, ensureScansionDOM, alignAllScansions,
+  type RenderCtx } from "./render";
 import { createProsodyToggle, loadProsody } from "./prosody";
 import { closeTranslation, openTranslation } from "./translation";
 import { initDrawerWidth } from "./drawer-resize";
@@ -67,7 +68,8 @@ async function go(): Promise<void> {
       if (!current()) return;
       for (const author of catalog.authors) for (const work of author.works)
         titles.set(`${author.tlg}/${work.id}`,
-          work.titleZh ? `${work.title} · ${work.titleZh}` : work.title);
+          work.titleZh && work.titleZh !== work.title
+            ? `${work.titleZh} · ${work.title}` : work.title);
       sec.replaceWith(continueReadingSection(titles));
     }).catch(() => {});
     return;
@@ -86,15 +88,24 @@ async function go(): Promise<void> {
     if (!author || !work) { showError("This work could not be found. Check the link or return to the catalog."); return; }
     document.title = `${work.title} · ${author.name} — Greek Reader`;
     setUnitContext(tlg, id);
-    await reader(work, author.name, tlg, new URLSearchParams(query).get("ref"), current);
+    await reader(work, author, tlg, new URLSearchParams(query).get("ref"), current);
   } catch (error) {
     if (current()) showError(`Could not load this text: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
-async function reader(work: CatalogWork, author: string, tlg: string, ref: string | null, current: () => boolean): Promise<void> {
-  const controls = renderControls(`${author}, ${work.title}`, () => { location.hash = "#/"; });
-  const heading = node("h1", "reader-title", work.titleZh || work.title);
+async function reader(work: CatalogWork, author: CatalogAuthor, tlg: string, ref: string | null, current: () => boolean): Promise<void> {
+  const controls = renderControls(`${author.name}, ${work.title}`, () => { location.hash = "#/"; });
+  // Bilingual H1 mirroring the home work card: Chinese primary + original
+  // muted underneath (single title when no Chinese name ships).
+  const heading = node("h1", "reader-title");
+  const zhT = work.titleZh?.trim();
+  const main = node("span", "reader-title-main", zhT || work.title);
+  if (zhT) main.lang = "zh";
+  heading.appendChild(main);
+  if (zhT && zhT !== work.title) {
+    heading.appendChild(node("span", "reader-title-orig", work.title));
+  }
   const help = node("p", "reader-guide", "Read the Greek first; each word’s lemma, grammar and dictionary gloss stay underneath it. Select a word for details. + shows alternative analyses, not certainty.");
   const body = node("div", "reader-body");
   const status = node("p", "reader-error");
@@ -196,7 +207,11 @@ async function reader(work: CatalogWork, author: string, tlg: string, ref: strin
       let j = i;
       while (j < raw.length && /^\d+$/.test(raw[j].key)) j++;
       if (j - i > 40) {
-        let b = -1; let lo = "";
+        // NOTE: bucket id starts null, never -1: ref "0" (Agamemnon's first
+        // line) buckets to -1 and must open its own group, not index an
+        // empty array (TypeError crash).
+        let b: number | null = null;
+        let lo = "";
         for (let k = i; k < j; k++) {
           const nb = Math.floor((Number(raw[k].key) - 1) / 100);
           if (nb !== b) {
@@ -466,7 +481,11 @@ async function reader(work: CatalogWork, author: string, tlg: string, ref: strin
   if (!current() || kind !== "verse") return;
   setProsodyWorkId(`${tlg}--${work.id}`);
   const patterns = await loadProsody(work.id, tlg);
-  if (current() && patterns?.size) controls.root.appendChild(createProsodyToggle(work.id, tlg));
+  if (!current() || !patterns?.size) return;
+  controls.root.appendChild(createProsodyToggle(work.id, tlg));
+  // rows painted before data arrived (page 1) get their scans now
+  ensureScansionDOM();
+  requestAnimationFrame(() => alignAllScansions());
 }
 
 window.addEventListener("hashchange", () => void go());

@@ -395,6 +395,15 @@ input:focus, textarea:focus, select:focus {
 }
 
 .reader-title { font-family: var(--font-read); font-size: 1.75rem; margin-bottom: 12px; }
+.reader-title-main { display: block; }
+.reader-title-orig {
+  display: block;
+  font-family: var(--font-ui);
+  font-size: 1rem;
+  font-weight: 400;
+  color: var(--muted);
+  margin-top: 4px;
+}
 .reader-guide { max-width: 78ch; font-size: 0.85rem; color: var(--muted); margin: 0 0 32px; }
 .reader-error:not(:empty) { padding: 12px; border-left: 3px solid var(--accent); background: var(--surface-2); }
 .reader-body > div > .line, .reader-body > div > .unit { padding-bottom: 24px; border-bottom: 1px solid var(--border); }
@@ -1156,13 +1165,16 @@ textarea {
 .about-list { max-width: 46rem; padding-left: 20px; }
 .about-list li { margin: 8px 0; line-height: 1.6; font-family: var(--font-read); }
 
-/* prosody scansion — word-aligned: one .scan-u span per Greek word span,
- * pinned by render.ts to its word's exact box. Same serif face & size as the
- * Greek line so spaces and wrap points coincide naturally. */
+/* prosody scansion — syllable-aligned: one .scan-u span per Greek syllable,
+ * pinned by render.ts to its syllable's exact box (data-sy pairing). Same
+ * serif face & size as the Greek line so spaces and wrap points coincide
+ * naturally. Approximate rows carry data-approx + a visible ≈ flag. */
 .scansion {
   display: none;
   font-family: var(--font-read);
-  font-size: var(--greek-size);
+  /* annotation tier: smaller than the Greek so quantity marks never fight
+   * the text for ink space (tiling is measurement-based, size-independent) */
+  font-size: calc(var(--greek-size) * 0.85);
   line-height: 1.2;
   color: var(--warm);
   margin: 2px 0 4px;
@@ -1176,6 +1188,30 @@ body.show-prosody .scansion {
   text-align: center;
   white-space: nowrap;
 }
+/* foot-boundary pipe: a 1px hairline with zero net footprint (the border is
+ * cancelled by a -1px margin), so ruler tiling stays pixel-exact. A "|" text
+ * glyph is deliberately NOT used: at ~9px wide it bled into neighbouring
+ * symbols out of narrow syllable boxes. */
+.scan-pipe {
+  display: inline-block;
+  width: 0;
+  height: 1em;
+  border-left: 1px solid currentColor;
+  margin-right: -1px;
+  overflow: hidden;
+  white-space: nowrap;
+  /* recede behind the quantity marks: at 1px the bar stays legible while
+   * sub-pixel grazing on the narrowest syllables reads as tight setting */
+  opacity: 0.45;
+  vertical-align: baseline;
+}
+/* approximate row: word-grouped symbols, positions not exact — say so */
+.scansion[data-approx] .scan-u:first-child::before {
+  content: "≈ ";
+  opacity: 0.75;
+}
+/* verse words never break mid-word (they now contain syllable spans) */
+.line .w { white-space: nowrap; }
 
 /* drawer push: on narrow screens overlay instead of squeeze */
 @media (max-width: 48rem) {

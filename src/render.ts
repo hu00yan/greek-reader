@@ -9,7 +9,7 @@ import { fetchHomerEntries, HOMER_DICTS, isHomerActive, openLexicon,
 import { themeControl } from "./theme";
 import { speakGreek, stopTTS, pauseTTS, resumeTTS, speakQueue, onTTSStatus, getTTSStatus, isUnitActive, stopUnit } from "./tts";
 import {
-  getProsodyPattern, isProsodyEnabled, buildScansionRow, onProsodyToggle,
+  getProsodyRaw, isProsodyEnabled, scansionForUnit, onProsodyToggle,
 } from "./prosody";
 
 type El = HTMLElement;
@@ -555,17 +555,17 @@ export function renderUnits(
 
     row.appendChild(greek);
 
-    // prosody: word-aligned scansion under each verse Greek line (toggle via
-    // toolbar). Each .scan-u span maps 1:1 to the .w span above it; widths are
-    // pinned by alignScansionRows() so symbols sit exactly under their word.
+    // prosody: syllable-aligned scansion under each verse Greek line (toggle
+    // via toolbar). Precise rows pin every symbol to its syllable's measured
+    // box; approximate rows (≈) group symbols per word in symbol order.
     if (kind === "verse" && currentProsodyWorkId) {
       const globalIdx = baseIndex + uIdx;
-      const pat = getProsodyPattern(currentProsodyWorkId, unit.ref, globalIdx);
-      if (pat) {
-        const scan = buildScansionRow(unit.ref, unit.words, pat);
+      const raw = getProsodyRaw(currentProsodyWorkId, unit.ref, globalIdx);
+      if (raw) {
+        const scan = scansionForUnit(greek, unit.words, raw, unit.ref);
         // visibility controlled by body.show-prosody; alignment deferred to
         // the prosody-toggle/observer passes (element is display:none now)
-        row.appendChild(scan);
+        if (scan) row.appendChild(scan);
       }
     }
 
@@ -580,29 +580,53 @@ export function renderUnits(
 }
 
 /* ---------------- scansion alignment ----------------
- * Pin each .scan-u span to the exact box of its .w word span: width := word
- * width, trailing margin := the gap to the next word. Both rows then wrap at
- * identical points (same column widths), so every — / ∪ sits under its word
- * and foot pipes land between the right syllables. Runs only while rows are
- * visible (display:none under body:not(.show-prosody)); re-run on toggle,
- * font resize, and web-font load. */
+ * Precise rows (per-syllable .scan-u with data-sy): pin each symbol to its
+ * syllable's measured box (width := syllable width, centered text) and tile
+ * consecutive spans edge-to-edge using measured gaps — the scansion row then
+ * wraps at exactly the Greek wrap points, and every symbol sits under its
+ * own syllable. Approximate rows (≈, word spans without data-sy): legacy
+ * word-box pinning, order-correct only. Runs only while rows are visible
+ * (display:none under body:not(.show-prosody)); re-run on toggle, font
+ * resize, and web-font load. */
 
 function alignScansionContainer(scan: El, greek: El): boolean {
   const sus = Array.from(scan.querySelectorAll<HTMLElement>(".scan-u"));
-  const ws = Array.from(greek.querySelectorAll<HTMLElement>(".w"));
-  if (!sus.length || ws.length < sus.length) return false;
+  if (!sus.length) return false;
   // hidden rows can't be measured — flag for the next pass instead
   if (!scan.isConnected || scan.getClientRects().length === 0) return false;
-  for (let i = 0; i < sus.length; i++) {
-    const w = ws[i];
-    const su = sus[i];
-    const wr = w.getBoundingClientRect();
-    su.style.width = `${wr.width}px`;
-    if (i < sus.length - 1) {
-      const wn = ws[i + 1].getBoundingClientRect();
-      su.style.marginRight = `${Math.max(0, wn.left - wr.right)}px`;
-    } else {
-      su.style.marginRight = "0px";
+  if (sus[0].hasAttribute("data-sy")) {
+    const boxBySy = new Map<string, DOMRect>();
+    greek.querySelectorAll<HTMLElement>(".syl").forEach((s) => {
+      const k = s.dataset.sy ?? "";
+      if (!boxBySy.has(k)) boxBySy.set(k, s.getBoundingClientRect());
+    });
+    let prevBox: DOMRect | null = null;
+    let prevSu: HTMLElement | null = null;
+    for (const su of sus) {
+      const box = boxBySy.get(su.dataset.sy ?? "");
+      if (!box) continue; // unmatched: leave unpinned, never misplace
+      su.style.width = `${box.width}px`;
+      if (prevSu && prevBox) {
+        prevSu.style.marginRight = `${Math.max(0, box.left - prevBox.right)}px`;
+      }
+      prevBox = box;
+      prevSu = su;
+    }
+    if (prevSu) prevSu.style.marginRight = "0px";
+  } else {
+    const ws = Array.from(greek.querySelectorAll<HTMLElement>(".w"));
+    if (ws.length < sus.length) return false;
+    for (let i = 0; i < sus.length; i++) {
+      const w = ws[i];
+      const su = sus[i];
+      const wr = w.getBoundingClientRect();
+      su.style.width = `${wr.width}px`;
+      if (i < sus.length - 1) {
+        const wn = ws[i + 1].getBoundingClientRect();
+        su.style.marginRight = `${Math.max(0, wn.left - wr.right)}px`;
+      } else {
+        su.style.marginRight = "0px";
+      }
     }
   }
   scan.removeAttribute("data-needs-align");
@@ -633,10 +657,40 @@ function bindScansionHooks(): void {
   if (scansionHooksBound) return;
   scansionHooksBound = true;
   onProsodyToggle(() => {
+    if (isProsodyEnabled()) ensureScansionDOM();
     requestAnimationFrame(() => requestAnimationFrame(alignAllScansions));
   });
 }
 bindScansionHooks();
+
+/**
+ * Inject missing scansion rows into already-rendered verse rows (rows painted
+ * before prosody data arrived, e.g. page 1). Split rows are restored to flat
+ * layout first so injection + repack produce one consistent structure;
+ * repackAll() re-splits visible rows with their scans distributed.
+ */
+export function ensureScansionDOM(): void {
+  if (!currentProsodyWorkId || !isProsodyEnabled()) return;
+  let touched = false;
+  document.querySelectorAll<HTMLElement>(".line").forEach((row, idx) => {
+    if (row.querySelector(".scansion")) return;
+    if (row.querySelector(".vline")) unsplitRow(row);
+    const greek = row.querySelector<HTMLElement>(":scope > .greek-line");
+    if (!greek) return;
+    const ref = row.dataset.ref ?? "";
+    const raw = getProsodyRaw(currentProsodyWorkId!, ref, idx);
+    if (!raw) return;
+    const words = Array.from(greek.querySelectorAll<HTMLElement>(":scope > .w"))
+      .map((s) => s.textContent ?? "");
+    if (!words.length) return;
+    const scan = scansionForUnit(greek, words, raw, ref);
+    if (!scan) return;
+    if (greek.nextSibling) greek.parentNode?.insertBefore(scan, greek.nextSibling);
+    else greek.parentNode?.appendChild(scan);
+    touched = true;
+  });
+  if (touched) repackAll();
+}
 
 /* ---------------- speaker labels ---------------- */
 
@@ -862,9 +916,10 @@ function unsplitRow(row: El): void {
   const head = row.querySelector(".unit-head");
   const aiOut = row.querySelector(":scope > .ai-out") as El | null;
   // gather word-aligned scansion spans back in word order
+  // (.scan-pipe markers travel with them via the same query)
   const scanUs: HTMLElement[] = [];
   for (const b of blocks) {
-    b.querySelectorAll<HTMLElement>(".scansion .scan-u")
+    b.querySelectorAll<HTMLElement>(".scansion .scan-u, .scansion .scan-pipe")
       .forEach((s) => scanUs.push(s));
   }
   const greek = el("div", "greek-line");
@@ -944,27 +999,53 @@ function reflowRow(entry: ReflowEntry): void {
   const head = row.querySelector(".unit-head");
   // Preserve AI output if present (should stay outside vlines, at row end)
   const aiOut = row.querySelector(":scope > .ai-out") as El | null;
-  // word-aligned scansion: distribute spans into their own visual-line block
+  // scansion spans travel with their word: group consecutive spans by word
+  // (precise rows: data-w; approximate rows: data-wi — both are all-word
+  // indexes into unit.words, speakers included)
   const scanRow = row.querySelector(":scope > .scansion") as El | null;
   const scanUs = scanRow
-    ? Array.from(scanRow.querySelectorAll<HTMLElement>(".scan-u"))
+    ? Array.from(scanRow.querySelectorAll<HTMLElement>(".scan-u, .scan-pipe"))
     : [];
+  const scanGroups = new Map<number, HTMLElement[]>();
+  for (const su of scanUs) {
+    const w = Number(su.dataset.w ?? su.dataset.wi ?? -1);
+    const arr = scanGroups.get(w);
+    if (arr) arr.push(su);
+    else scanGroups.set(w, [su]);
+  }
+  // all-word indexes that own a parse column (speaker labels don't)
+  const cardSet = new Set(cardToAll);
   const frag = document.createDocumentFragment();
   // measure container width explicitly to pack correctly (prose paragraphs)
   void row.clientWidth;
   void greek.clientWidth;
+  // speaker/extra symbol groups ride the first visual block (same as Greek)
+  const extraGroups: HTMLElement[][] = [];
+  for (const [w, arr] of scanGroups) {
+    if (!cardSet.has(w)) extraGroups.push(arr);
+  }
   for (const g of groups) {
     const block = el("div", "vline");
     const gl = el("div", "greek-line");
     gl.setAttribute("lang", "grc");
     const pr = el("div", "parse-row");
     let bScan: El | null = scanUs.length ? el("div", "scansion") : null;
-    if (bScan && scanRow) bScan.dataset.pattern = scanRow.dataset.pattern ?? "";
+    if (bScan && scanRow) {
+      bScan.dataset.raw = scanRow.dataset.raw ?? "";
+      if (scanRow.dataset.approx) bScan.dataset.approx = "1";
+    }
+    if (bScan && g === groups[0]) {
+      for (const arr of extraGroups) {
+        for (const su of arr) bScan.appendChild(su);
+      }
+    }
     // pack every word index in this visual line
     for (const idx of g) {
       for (const n of buckets[idx] ?? []) gl.appendChild(n);
-      const su = scanUs[cardToAll[idx] ?? idx];
-      if (su && bScan) bScan.appendChild(su); // scansion follows its word's line
+      const all = cardToAll[idx] ?? idx;
+      for (const su of scanGroups.get(all) ?? []) {
+        if (su && bScan) bScan.appendChild(su); // scansion follows its word's line
+      }
     }
     // every visual Greek line gets exactly its parse row beneath
     for (let k = 0; k < g.length; k++) {
@@ -1007,10 +1088,10 @@ export function zhTitleOf(work: unknown): string {
 }
 
 /**
- * Reader-header upgrade: swap the flat crumb ("Author, Title") for a
- * compact two-line stack — Chinese title primary, original title small +
- * muted underneath — when this route's work carries titleZh. No-op when
- * absent, the route changed mid-load, or the bar was torn down.
+ * Reader-header upgrade: swap the flat crumb ("Author, Title") for a compact
+ * two-line stack with the SAME bilingual composition as the home catalog —
+ * author line, then work line, each "Chinese · original" when Chinese exists.
+ * No-op when the route changed mid-load or the bar was torn down.
  */
 function upgradeCrumbs(crumbs: El, catalog: Catalog): void {
   const hashAtCall = location.hash;
@@ -1021,12 +1102,14 @@ function upgradeCrumbs(crumbs: El, catalog: Catalog): void {
   const author = catalog.authors.find((a) => a.tlg === m[1]);
   const work = author?.works.find((w) => w.id === wid);
   if (!author || !work) return;
-  const zh = zhTitleOf(work);
-  if (!zh || !crumbs.isConnected || location.hash !== hashAtCall) return;
+  if (!crumbs.isConnected || location.hash !== hashAtCall) return;
   crumbs.classList.add("bilingual");
-  const zhLine = el("span", "crumb-zh", `${author.name}, ${zh}`);
-  zhLine.lang = "zh";
-  crumbs.replaceChildren(zhLine, el("span", "crumb-orig", work.title));
+  const aLine = el("span", "crumb-zh",
+    author.nameZh ? `${author.nameZh} · ${author.name}` : author.name);
+  const zh = zhTitleOf(work);
+  const wLine = el("span", "crumb-orig",
+    zh && zh !== work.title ? `${zh} · ${work.title}` : work.title);
+  crumbs.replaceChildren(aLine, wLine);
 }
 
 export function renderControls(crumbsText: string, onBack: () => void): Controls {

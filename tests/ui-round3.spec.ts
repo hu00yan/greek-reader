@@ -142,7 +142,15 @@ test.describe('UI round 3', () => {
   });
 
   // ---- Bug 3: scansion alignment ---------------------------------------------
-  test('bug3: scansion spans sit exactly under their Greek words', async ({ page }) => {
+  // Contract (syllable-precise, honestly flagged):
+  //   - every symbol sits centered over its own syllable (≤1px), never under
+  //     a neighbour's — verified per symbol, not per word;
+  //   - no foot pipes anywhere (the greedy segmentation put 7-8 "feet" and
+  //     impossible trochees on most hexameter lines);
+  //   - lines whose counts don't validate render word-grouped WITH a visible
+  //     ≈ flag instead of silently sliding symbols;
+  //   - splitting words into syllable spans never alters the Greek text.
+  test('bug3: scansion symbols sit exactly under their Greek syllables', async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await openReader(page, ILIAD);
     const tog = page.locator('.controls button', { hasText: /Scansion/ });
@@ -151,47 +159,178 @@ test.describe('UI round 3', () => {
     await page.waitForSelector('.line .scansion .scan-u', { timeout: 10_000 });
     await page.waitForTimeout(600); // alignment pass
 
+    // splitting must not alter the Greek text itself
+    const t1 = await page.locator('.line').first().locator('.greek-line').textContent();
+    expect(t1?.replace(/\s+/g, ' ').trim())
+      .toBe('μῆνιν ἄειδε θεὰ Πηληϊάδεω Ἀχιλῆος');
+
     const rows = await page.evaluate(() => {
       const out: Array<{
+        approx: boolean;
+        attributed: boolean; // every symbol paired to a measured syllable box
         symsInOrder: boolean;
         maxOffsetPx: number;
-        widthsMatch: boolean;
+        nSyms: number;
+        nPipes: number;
       }> = [];
       document.querySelectorAll<HTMLElement>('.line').forEach((row) => {
         const scan = row.querySelector<HTMLElement>(':scope > .scansion');
         const greek = row.querySelector<HTMLElement>(':scope > .greek-line');
-        if (!scan || !greek || out.length >= 8) return;
+        if (!scan || !greek || out.length >= 12) return;
         const sus = Array.from(scan.querySelectorAll<HTMLElement>('.scan-u'));
-        const ws = Array.from(greek.querySelectorAll<HTMLElement>('.w'));
-        if (!sus.length || ws.length < sus.length) return;
-        let maxOff = 0;
-        let widths = true;
-        for (let i = 0; i < sus.length; i++) {
-          const g = ws[i].getBoundingClientRect();
-          const s = sus[i].getBoundingClientRect();
-          maxOff = Math.max(maxOff, Math.abs(g.left - s.left),
-            Math.abs((g.left + g.width / 2) - (s.left + s.width / 2)));
-          if (Math.abs(g.width - s.width) > 1.5) widths = false;
+        if (!sus.length) return;
+        // every raw symbol consumed once, in order (¯ stays, ˘→∪ x→×)
+        const raw = (scan.dataset.raw ?? '').replace(/[^¯˘x]/g, '')
+          .replace(/˘/g, '∪').replace(/x/g, '×');
+        const joined = sus.map((s) => s.textContent ?? '').join('');
+        if (joined !== raw) {
+          out.push({ approx: true, attributed: false, symsInOrder: false, maxOffsetPx: -1, nSyms: sus.length, nPipes: 0 });
+          return;
         }
-        // every pattern symbol consumed once, in order (foot pipes excluded)
-        const patSyms = (scan.dataset.pattern ?? '').split(/\s+/)
-          .filter((t) => /[—–∪¯˘]/.test(t));
-        const rowSyms = sus.map((s) => s.textContent ?? '').join('')
-          .split('').filter((c) => /[—–∪¯˘]/.test(c));
+        const approx = scan.hasAttribute('data-approx');
+        const nPipes = scan.querySelectorAll('.scan-pipe').length;
+        // precise attribution: every symbol's center over its syllable's center
+        const syls = new Map<string, DOMRect>();
+        greek.querySelectorAll<HTMLElement>('.syl').forEach((s) =>
+          syls.set(s.dataset.sy ?? '', s.getBoundingClientRect()));
+        let maxOff = 0;
+        let attributed = true;
+        for (const su of sus) {
+          const g = syls.get(su.dataset.sy ?? '');
+          if (!g) { attributed = false; break; }
+          const r = su.getBoundingClientRect();
+          maxOff = Math.max(maxOff,
+            Math.abs((r.left + r.width / 2) - (g.left + g.width / 2)));
+        }
         out.push({
-          symsInOrder: patSyms.join('') === rowSyms.join(''),
-          maxOffsetPx: Math.round(maxOff * 10) / 10,
-          widthsMatch: widths,
+          approx,
+          attributed,
+          symsInOrder: true,
+          maxOffsetPx: Math.round(maxOff * 100) / 100,
+          nSyms: sus.length,
+          nPipes,
         });
       });
       return out;
     });
-    expect(rows.length).toBeGreaterThanOrEqual(5);
+    expect(rows.length).toBeGreaterThanOrEqual(8);
+    // foot pipes: 0 or 5 per row, never 7 like the old greedy segmenter.
+    // A piped row must be fully trusted (attributed + unflagged) with every
+    // segment a valid foot — pipes always mean verified foot membership.
+    const pipeCheck = await page.evaluate(() => {
+      const bad: string[] = [];
+      let piped = 0;
+      document.querySelectorAll<HTMLElement>('.line > .scansion').forEach((scan) => {
+        const n = scan.querySelectorAll('.scan-pipe').length;
+        if (!n) return;
+        piped++;
+        const ref = scan.closest('.line')?.dataset.ref ?? '?';
+        if (n !== 5) { bad.push(`${ref}: ${n} pipes`); return; }
+        if (scan.hasAttribute('data-approx')) { bad.push(`${ref}: piped but flagged`); return; }
+        const segs: string[][] = [[]];
+        for (const node of Array.from(scan.childNodes)) {
+          const e = node as HTMLElement;
+          if (e.classList?.contains('scan-pipe')) segs.push([]);
+          else if (e.classList?.contains('scan-u')) segs[segs.length - 1].push(e.textContent ?? '');
+        }
+        segs.map((a) => a.join('')).forEach((s, i) => {
+          if (!/^(¯∪∪|¯¯|∪¯|¯×|∪×)$/.test(s)) bad.push(`${ref}#${i}:${s}`);
+        });
+      });
+      return { piped, bad: bad.slice(0, 6) };
+    });
+    expect(pipeCheck.bad, JSON.stringify(pipeCheck)).toEqual([]);
+    expect(pipeCheck.piped).toBeGreaterThan(0);
+    let nApprox = 0;
+    let nAttributed = 0;
     for (const r of rows) {
       expect(r.symsInOrder, `symbols in order (${JSON.stringify(r)})`).toBeTruthy();
-      expect(r.widthsMatch, `width-matched spans (${JSON.stringify(r)})`).toBeTruthy();
-      expect(r.maxOffsetPx, `spans pinned under words (${JSON.stringify(r)})`).toBeLessThanOrEqual(2);
+      if (!r.attributed) {
+        // word-grouped fallback: flagged, never piped
+        expect(r.approx, `unattributed row must be flagged (${JSON.stringify(r)})`).toBeTruthy();
+        expect(r.nPipes, `unattributed row must not carry pipes (${JSON.stringify(r)})`).toBe(0);
+        nApprox++;
+        continue;
+      }
+      nAttributed++;
+      expect(r.maxOffsetPx, `symbols pinned under syllables (${JSON.stringify(r)})`).toBeLessThanOrEqual(1);
+      if (r.approx) { nApprox++; continue; } // attributed exactly, values suspect
+      expect(r.nPipes, `trusted row carries its 5 foot pipes (${JSON.stringify(r)})`).toBe(5);
     }
+    // all three states occur on Iliad book 1: trusted, attributed-but-≈,
+    // and word-grouped ≈
+    expect(nAttributed).toBeGreaterThan(0);
+    expect(nApprox).toBeGreaterThan(0);
+    expect(nApprox).toBeLessThan(rows.length);
+    // the ≈ flag is actually visible (not just a data attribute)
+    const approxVisible = await page.evaluate(() => {
+      const row = document.querySelector('.line > .scansion[data-approx] .scan-u');
+      if (!row) return false;
+      const cs = getComputedStyle(row, '::before').content;
+      return !!cs && cs !== 'none' && cs.includes('≈');
+    });
+    expect(approxVisible).toBeTruthy();
+
+    // attribution rate over ~100 lines stays high — tripwire against
+    // syllabifier regressions (measured 84.7% Iliad-wide). Foot-cleanliness
+    // is stricter (~22%) and asserted per-row above, not here.
+    for (let i = 0; i < 3; i++) {
+      await page.locator('.pager button', { hasText: /Next/ }).click();
+      await page.waitForTimeout(1200);
+    }
+    const rate = await page.evaluate(() => {
+      const scans = Array.from(document.querySelectorAll('.line > .scansion'));
+      const attributed = scans.filter((s) =>
+        (s as HTMLElement).querySelector('.scan-u[data-sy]')).length;
+      return scans.length ? attributed / scans.length : 0;
+    });
+    expect(rate).toBeGreaterThanOrEqual(0.5);
+  });
+
+  // ---- Bug 3b: Agamemnon regression -----------------------------------------
+  // Ref "0" (prologue line) bucketed chapter-building into a TypeError
+  // ("Cannot set properties of undefined (setting 'label')") that blanked
+  // the whole reader. Its iambic lines must also carry valid ∪— pipes.
+  test('bug3b: Agamemnon opens, chapters include 0, iambic pipes valid', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto('/#/tlg0085/agamemnon');
+    await page.waitForSelector('.greek-line .w', { timeout: 30_000 });
+    // no error state (the status <p> exists but must stay empty)
+    await expect(page.locator('.reader-error')).toHaveText('');
+    const menu = await page.locator('.chapter-jump option')
+      .evaluateAll((els) => els.map((e) => e.textContent));
+    expect(menu).toContain('0');
+    const tog = page.locator('.controls button', { hasText: /Scansion/ });
+    await expect(tog).toBeVisible();
+    await tog.click();
+    await page.waitForSelector('.line .scansion .scan-u', { timeout: 10_000 });
+    await page.waitForTimeout(600);
+    const check = await page.evaluate(() => {
+      const bad: string[] = [];
+      let piped = 0;
+      document.querySelectorAll<HTMLElement>('.line').forEach((row) => {
+        if (piped > 0) return;
+        const scan = row.querySelector<HTMLElement>(':scope > .scansion');
+        if (!scan || !scan.querySelector('.scan-pipe')) return;
+        piped++;
+      });
+      const scan = document.querySelector('.line > .scansion:has(.scan-pipe)');
+      if (scan) {
+        const segs: string[][] = [[]];
+        for (const node of Array.from(scan.childNodes)) {
+          const e = node as HTMLElement;
+          if (e.classList?.contains('scan-pipe')) segs.push([]);
+          else if (e.classList?.contains('scan-u')) segs[segs.length - 1].push(e.textContent ?? '');
+        }
+        if (segs.length !== 6) bad.push(`feet: ${segs.length}`);
+        segs.map((a) => a.join('')).forEach((s, i) => {
+          if (!/^(∪¯|¯¯|∪×|¯×)$/.test(s)) bad.push(`foot${i}:${s}`);
+        });
+      }
+      return { piped: piped > 0, bad };
+    });
+    expect(check.piped).toBeTruthy();
+    expect(check.bad).toEqual([]);
   });
 
   // ---- Bug 4: gear in flow, no overflow ---------------------------------------
