@@ -293,7 +293,7 @@ export function renderAbout(app: HTMLElement): void {
   app.appendChild(p(
     "Plain HTML/JS/CSS, TypeScript, Vite/esbuild. Morphology is precomputed at build time by a locally patched Morpheus cruncher " +
     "(~350k unique forms) into alphabet-sharded JSON keyed by accent-stripped lookup; texts load part-by-part as you read. No server, DB or tracker — any static host works. " +
-    "Optional Cloudflare Pages Functions proxy live morphology to Tufts and relay BYO-key LLM calls (keys stay client-side). Offline TTS is on-device espeak-ng WASM (grc, reconstructed; per-line \uD83D\uDD0A and global Play/Pause/Stop, cached by the service worker, with a labelled modern-Greek Web Speech fallback only if grc is unavailable).",
+    "Optional Cloudflare Pages Functions proxy live morphology to Tufts and relay BYO-key LLM calls (keys stay client-side). Offline TTS is on-device espeak-ng WASM (grc, reconstructed; per-line \uD83D\uDD0A and global Play/Pause/Stop, cached by the service worker, with no modern-Greek fallback: if the ancient voice cannot load, playback reports an error instead of speaking).",
   ));
   app.appendChild(dependencyList());
 

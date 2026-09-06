@@ -1,12 +1,14 @@
-// Offline Ancient Greek TTS: espeak-ng WASM primary (grc voice, reconstructed
-// ancient pronunciation, robotic acceptable), fallback to Web Speech API only
-// if grc unavailable — clearly labelled as modern approximation.
+// Offline Ancient Greek TTS: espeak-ng WASM with the grc voice (reconstructed
+// ancient pronunciation, robotic acceptable). Binary behaviour by design:
+// either the ancient voice speaks, or playback fails with an explicit error —
+// there is deliberately NO modern-Greek approximation fallback (it would
+// mislead learners about pronunciation).
 // Payload is grc-only: dist/espeak-ng.wasm ~1.1MB raw (≤5MB target), verified
 // at build time (vite.config.ts ttsWasmPlugin). Only grc_dict + grk/grc + mb-de6-grc
 // are embedded; all other language dicts removed. Keeps quality for ancient Greek,
 // lazy-loaded only on first 🔊 click via dynamic import("espeak-ng") + fetch(wasm).
 // All DOM via textContent, no innerHTML.
-type TTSStatus = "idle" | "loading" | "ready" | "playing" | "paused" | "error" | "fallback";
+type TTSStatus = "idle" | "loading" | "ready" | "playing" | "paused" | "error";
 type StatusCb = (s: TTSStatus, msg?: string) => void;
 
 let status: TTSStatus = "idle";
@@ -101,8 +103,6 @@ export function stopTTS(): void {
   synthGen++; // invalidate any in-flight synthesis/playback
   queueAbort = true;
   cleanupAudio();
-  // also stop Web Speech fallback if active
-  try { window.speechSynthesis?.cancel(); } catch {}
   setStatus("idle");
 }
 
@@ -110,16 +110,12 @@ export function pauseTTS(): void {
   if (audio && !audio.paused) {
     audio.pause();
     setStatus("paused");
-  } else {
-    try { window.speechSynthesis?.pause(); setStatus("paused"); } catch {}
   }
 }
 
 export function resumeTTS(): void {
   if (audio && audio.paused) {
     void audio.play().then(() => setStatus("playing")).catch(() => setStatus("error", "playback failed"));
-  } else {
-    try { window.speechSynthesis?.resume(); setStatus("playing"); } catch {}
   }
 }
 
@@ -238,46 +234,8 @@ async function playWavBytes(data: Uint8Array, gen: number): Promise<void> {
   if (gen === synthGen) setStatus("idle");
 }
 
-function fallbackWebSpeech(text: string, label: boolean, gen: number): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    if (gen !== synthGen) { resolve(); return; }
-    if (!("speechSynthesis" in window) || !("SpeechSynthesisUtterance" in window)) {
-      reject(new Error("Web Speech unavailable"));
-      return;
-    }
-    const synth = window.speechSynthesis;
-    // Cancel any pending
-    try { synth.cancel(); } catch {}
-    const utter = new SpeechSynthesisUtterance(text);
-    utter.lang = "el-GR";
-    // Try to pick a Greek voice, but never claim it's ancient
-    let picked: SpeechSynthesisVoice | null = null;
-    try {
-      const voices = synth.getVoices();
-      picked = voices.find(v => /el[-_]/i.test(v.lang) || /greek/i.test(v.name)) ?? null;
-      if (picked) utter.voice = picked;
-    } catch {}
-    utter.rate = 0.9;
-    utter.onend = () => {
-      if (gen === synthGen) setStatus("idle");
-      resolve();
-    };
-    utter.onerror = (e) => {
-      if (gen !== synthGen) { resolve(); return; }
-      setStatus("error", (e as unknown as { error?: string })?.error ?? "fallback error");
-      reject(new Error("fallback failed"));
-    };
-    if (label) setStatus("fallback", "espeak-ng grc unavailable — using modern Greek approximation (Web Speech)");
-    else setStatus("playing");
-    if (gen !== synthGen) { resolve(); return; } // superseded while picking voice
-    lastExpectedMs = expectedDurationMs(text);
-    synth.speak(utter);
-    // Some browsers require resume if paused
-    if (synth.paused) try { synth.resume(); } catch {}
-  });
-}
-
-// Public: speak one Greek text via grc voice; fallback to modern approximation with explicit label.
+// Public: speak one Greek text with the grc voice. Either it speaks, or the
+// caller gets an error — no approximation fallback (see header note).
 // `owner` (optional) ties this utterance to a unit button for stopUnit().
 export async function speakGreek(text: string, owner?: string): Promise<void> {
   const trimmed = text.trim();
@@ -286,24 +244,17 @@ export async function speakGreek(text: string, owner?: string): Promise<void> {
   ownerToken = owner ?? null; // global/queue speech clears unit ownership
   queueAbort = false;
   cleanupAudio();
-  try { window.speechSynthesis?.cancel(); } catch {}
   setStatus("loading");
   try {
     (window as unknown as Record<string, unknown>).__ttsSpeakText = trimmed;
   } catch {}
-  // Primary: espeak-ng WASM grc
+  // Sole engine: espeak-ng WASM grc.
   const ok = await tryEspeakGrc(trimmed, gen);
   if (gen !== synthGen) return; // superseded — never touch status/audio
   if (ok) return;
-  // Fallback only if grc unavailable — clearly labelled
-  try {
-    await fallbackWebSpeech(trimmed, true, gen);
-    return;
-  } catch {
-    if (gen === synthGen) {
-      setStatus("error", "TTS unavailable");
-      throw new Error("TTS failed");
-    }
+  if (gen === synthGen) {
+    setStatus("error", "Ancient voice unavailable");
+    throw new Error("TTS failed");
   }
 }
 

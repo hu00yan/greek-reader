@@ -251,6 +251,24 @@ input:focus, textarea:focus, select:focus {
   box-shadow: 0 0 0 3px var(--accent-ring);
 }
 
+/* ---- first-run guide card (home) ------------------------------------------------ */
+.guide-card { margin: 0 0 20px; }
+.guide-card[hidden] { display: none; }
+.guide-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.guide-x {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: none;
+}
+.guide-steps { margin: 8px 0 0; padding-left: 20px; color: var(--muted); font-size: 0.9rem; }
+.guide-steps li { margin: 4px 0; }
+.guide-steps strong { color: var(--text); font-weight: 600; }
+
 /* ---- home cards ---------------------------------------------------------- */
 .cards { display: grid; gap: 12px; margin-top: 32px; }
 
@@ -747,6 +765,34 @@ textarea {
 .load-more:disabled { cursor: default; }
 
 /* pager footer */
+/* ---- chapter dividers + jump (reader) ---------------------------------------- */
+.chapter-div {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 8px 0 20px;
+  color: var(--faint);
+}
+.chapter-div::before,
+.chapter-div::after {
+  content: "";
+  height: 1px;
+  background: var(--border);
+  flex: 1;
+}
+.chapter-div-label {
+  font-size: 0.78rem;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  font-weight: 650;
+  white-space: nowrap;
+}
+.chapter-jump {
+  font-size: 0.84rem;
+  padding: 4px 10px;
+  max-width: min(11rem, 40vw);
+}
+
 .pager {
   display: flex;
   align-items: center;

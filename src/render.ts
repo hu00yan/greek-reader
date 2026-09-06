@@ -472,6 +472,8 @@ export function renderUnits(
     // unit.ref stays verbatim for translation alignment
     const domRef = unit.domRef ?? (unit.ref ? uniqueDomRef(container, unit.ref) : null);
     if (domRef) row.dataset.ref = domRef; // deep-link / resume target
+    row.dataset.idx = String(baseIndex + uIdx); // global unit index (chapter sync)
+    if (unit.chapter) row.dataset.chapter = unit.chapter;
     // Deterministic header: ref + right-aligned grouped actions (TTS + AI)
     const head = el("div", "unit-head");
     // prose-head alias for backward compat + styling
@@ -1101,11 +1103,6 @@ export function renderControls(crumbsText: string, onBack: () => void): Controls
       ttsToggle.textContent = "⏳ Loading";
       ttsToggle.disabled = true;
       ttsStatus.textContent = "loading voice…";
-    } else if (s === "fallback") {
-      ttsToggle.textContent = "▶ Play";
-      ttsToggle.disabled = false;
-      ttsStatus.textContent = "modern approx.";
-      ttsStatus.title = "espeak-ng grc unavailable — using Web Speech modern Greek approximation";
     } else if (s === "error") {
       ttsToggle.textContent = "▶ Play";
       ttsToggle.disabled = false;
@@ -1122,10 +1119,7 @@ export function renderControls(crumbsText: string, onBack: () => void): Controls
   // re-render) before adding the fresh one, then keep the unsubscriber
   ttsUiUnsub?.();
   ttsUiUnsub = onTTSStatus((s, msg) => {
-    if (s === "fallback" && msg) {
-      ttsStatus.textContent = "modern approx.";
-      ttsStatus.title = msg;
-    } else if (s === "error" && msg) {
+    if (s === "error" && msg) {
       ttsStatus.textContent = msg.slice(0, 40);
     }
     updateTTSButtons();
@@ -1135,7 +1129,7 @@ export function renderControls(crumbsText: string, onBack: () => void): Controls
     if (s === "playing") { pauseTTS(); return; }
     if (s === "paused") { resumeTTS(); return; }
     if (s === "loading") return; // button is disabled anyway
-    // idle / fallback / error: start playing the visible Greek from the top.
+    // idle / error: start playing the visible Greek from the top.
     // Interacting with the toolbar cancels per-unit playback entirely.
     document
       .querySelectorAll<HTMLElement>(".tts-speaking")

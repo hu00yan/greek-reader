@@ -36,6 +36,8 @@ export interface Unit {
   /** Stable display reference and duplicate occurrence, assigned before paging. */
   domRef?: string;
   occurrence?: number;
+  /** Chapter group key for section navigation ("1", "steph.530", "260"). */
+  chapter?: string;
 }
 export interface WorkPart {
   id: string;

@@ -7,6 +7,40 @@ import { fromBeta } from "./betacode";
 import { lexiconButton } from "./lexicon";
 import { themeControl } from "./theme";
 import { aboutLink } from "./about";
+import { storage } from "./storage";
+
+const GUIDE_KEY = "greek-reader.guide.dismissed";
+
+/** Compact how-to-read card. Dismiss persists; nothing else depends on it. */
+function guideCard(): HTMLElement {
+  const card = el("div", "card guide-card");
+  if (storage.getItem(GUIDE_KEY) === "1") card.hidden = true;
+  const head = el("div", "guide-head");
+  head.appendChild(el("div", "title", "How to read"));
+  const x = el("button", "guide-x", "×") as HTMLButtonElement;
+  x.type = "button";
+  x.setAttribute("aria-label", "Dismiss guide");
+  x.title = "Dismiss";
+  x.addEventListener("click", () => {
+    storage.setItem(GUIDE_KEY, "1");
+    card.hidden = true;
+  });
+  head.appendChild(x);
+  card.appendChild(head);
+  const ol = el("ol", "guide-steps") as HTMLOListElement;
+  for (const [a, b] of [
+    ["Pick a work below", "755 works from Homer to Plutarch, the New Testament and the Septuagint."],
+    ["Click any word", "full analysis plus dictionary entry; + shows alternative parses."],
+    ["Listen and compare", "🔊 reads the reconstructed ancient sound; English opens a parallel translation."],
+  ] as Array<[string, string]>) {
+    const li = el("li");
+    li.appendChild(el("strong", undefined, a));
+    li.appendChild(document.createTextNode(` — ${b}`));
+    ol.appendChild(li);
+  }
+  card.appendChild(ol);
+  return card;
+}
 
 const el = (tag: string, cls?: string, text?: string): HTMLElement => {
   const e = document.createElement(tag);
@@ -63,6 +97,9 @@ export function renderHome(app: HTMLElement): void {
   starters.appendChild(startLink("Symposium", "#/tlg0059/symposium"));
   starters.append(".");
   app.appendChild(starters);
+
+  // ---- first-run guide: three steps, dismissible (remembered per browser) ----
+  app.appendChild(guideCard());
 
   // "/" focuses search (until the home view is torn down)
   const onKey = (e: KeyboardEvent): void => {

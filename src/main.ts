@@ -117,10 +117,11 @@ async function reader(work: CatalogWork, author: string, tlg: string, ref: strin
   // the DOM stays bounded by how far the reader actually went.
   const units: Unit[] = []; // fetched (rendered or buffered), domRef pre-assigned
   const counts = new Map<string, number>();
+  const chCounts = new Map<string, number>(); // chapter key -> units known
   const usedRefs = new Set<string>();
   let partIndex = 0;
   let rendered = 0; // units painted into body
-  let pageRows: number[] = []; // DOM rows per rendered page
+  let pageRows: Array<{ children: number; units: number }> = []; // per rendered page
   let busy = false;
   let atEnd = false;
   let kind: "verse" | "prose" = "verse";
@@ -131,13 +132,14 @@ async function reader(work: CatalogWork, author: string, tlg: string, ref: strin
   jump.max = String(totalPages());
   const paintPager = () => {
     const shown = pageRows.length;
-    const start = shown ? rendered - pageRows[shown - 1] + 1 : 0;
+    const start = shown ? rendered - pageRows[shown - 1].units + 1 : 0;
     info.textContent = busy ? "Loading page…"
       : `Units ${start.toLocaleString()}–${rendered.toLocaleString()} of ` +
         `${work.unitCount.toLocaleString()} · Page ${shown} of ${totalPages()}`;
     prev.disabled = busy || shown <= 1;
     next.disabled = busy || atEnd || rendered >= work.unitCount;
     jump.disabled = busy;
+    chSel.disabled = busy;
     if (document.activeElement !== jump) jump.value = String(Math.max(1, shown));
     body.setAttribute("aria-busy", String(busy));
   };
@@ -166,6 +168,124 @@ async function reader(work: CatalogWork, author: string, tlg: string, ref: strin
   };
   if (work.translation?.files.length) controls.root.appendChild(trBtn);
 
+  /* ---------------- chapter navigation ---------------- */
+  // Chapter key: ref up to the first dot, keeping letter prefixes
+  // ("steph.1.1" → "steph.1", "1.2.3" → "1", "260.2" → "260").
+  function chapterKey(ref: string): string {
+    const out: string[] = [];
+    for (const seg of (ref || "").split(".")) {
+      out.push(seg);
+      if (!/^[A-Za-z]+$/.test(seg)) break;
+    }
+    return out.join(".");
+  }
+  interface Chapter { key: string; label: string; start: number }
+  /** Chapters in unit order. Long digit runs (continuous line numbers of
+   *  plays/hymns) collapse into hundred-blocks; citable keys (books,
+   *  Stephanus pages, sections) always stay individual. */
+  function buildChapters(): Chapter[] {
+    const raw: Array<{ key: string; start: number }> = [];
+    units.forEach((u, i) => {
+      const k = u.chapter ?? "";
+      if (!k) return;
+      if (!raw.length || raw[raw.length - 1].key !== k) raw.push({ key: k, start: i });
+    });
+    const out: Chapter[] = [];
+    let i = 0;
+    while (i < raw.length) {
+      let j = i;
+      while (j < raw.length && /^\d+$/.test(raw[j].key)) j++;
+      if (j - i > 40) {
+        let b = -1; let lo = "";
+        for (let k = i; k < j; k++) {
+          const nb = Math.floor((Number(raw[k].key) - 1) / 100);
+          if (nb !== b) {
+            b = nb; lo = raw[k].key;
+            out.push({ key: lo, label: lo, start: raw[k].start });
+          } else {
+            out[out.length - 1].label = `${lo}–${raw[k].key}`;
+          }
+        }
+      } else {
+        for (let k = i; k < j; k++) {
+          out.push({ key: raw[k].key, label: raw[k].key, start: raw[k].start });
+        }
+      }
+      if (j === i) { // non-digit key: its own entry
+        out.push({ key: raw[i].key, label: raw[i].key, start: raw[i].start });
+        j = i + 1;
+      }
+      i = j;
+    }
+    return out;
+  }
+  const chSel = node("select");
+  chSel.className = "chapter-jump";
+  chSel.setAttribute("aria-label", "Jump to chapter");
+  chSel.hidden = true;
+  pager.appendChild(chSel);
+  let chapters: Chapter[] = [];
+  /** Rebuild the menu from fetched units; shown only for long, sectioned works. */
+  const rebuildChapters = () => {
+    if (!current()) return;
+    chapters = buildChapters();
+    const show = chapters.length >= 3 && totalPages() >= 3;
+    chSel.hidden = !show;
+    if (!show) return;
+    const keep = chSel.value;
+    chSel.replaceChildren();
+    const ph = document.createElement("option");
+    ph.value = "";
+    ph.textContent = "Chapter…";
+    chSel.appendChild(ph);
+    for (const c of chapters) {
+      const o = document.createElement("option");
+      o.value = String(c.start);
+      o.textContent = c.label;
+      chSel.appendChild(o);
+    }
+    if (keep) chSel.value = keep;
+    chSel.disabled = busy;
+  };
+  chSel.onchange = () => {
+    if (chSel.value === "") return;
+    const start = Number(chSel.value);
+    chSel.value = "";
+    if (!Number.isInteger(start) || !units[start]) return;
+    const ref = units[start].domRef;
+    // Already on screen: just center it. Otherwise page there, then center.
+    const target = Math.floor(start / PAGE_SIZE) + 1;
+    const land = () => {
+      if (!current() || !ref) return;
+      const row = body.querySelector<HTMLElement>(`[data-ref="${CSS.escape(ref)}"]`);
+      if (!row) return;
+      savePosition(ref);
+      row.scrollIntoView({ block: "center" });
+      row.classList.add("ref-flash");
+      window.setTimeout(() => row.classList.remove("ref-flash"), 2400);
+    };
+    if (target <= pageRows.length) land();
+    else void turnPage(target - pageRows.length).then(() => land());
+  };
+  // Fetch remaining parts quietly so the menu covers the whole work.
+  // Single-part works (733/755) already hold everything after page 1.
+  let scanning = false;
+  const scanChapters = async () => {
+    if (scanning) return;
+    scanning = true;
+    try {
+      while (partIndex < work.files.length && current()) await fetchPart();
+      if (current()) rebuildChapters();
+    } catch { /* menu stays partial; paging still extends it */ }
+    finally { scanning = false; }
+  };
+  const chapterDivider = (label: string): HTMLElement => {
+    const d = node("div", "chapter-div");
+    d.setAttribute("aria-hidden", "true"); // decorative kicker; refs stay on rows
+    d.appendChild(node("span", "chapter-div-label", label));
+    return d;
+  };
+
   // Consume a part only after successful decoding. Retry never skips text.
   const fetchPart = async () => {
     const part = await loadPart(work.files[partIndex]);
@@ -178,7 +298,9 @@ async function reader(work: CatalogWork, author: string, tlg: string, ref: strin
         ? `${unit.ref}${String.fromCharCode(96 + occurrence)}` : `${unit.ref}${occurrence}`;
       while (usedRefs.has(domRef)) domRef += "~";
       usedRefs.add(domRef);
-      units.push({ ...unit, domRef, occurrence });
+      const chapter = chapterKey(unit.ref);
+      chCounts.set(chapter, (chCounts.get(chapter) ?? 0) + 1);
+      units.push({ ...unit, domRef, occurrence, chapter });
     }
     partIndex++;
   };
@@ -200,9 +322,33 @@ async function reader(work: CatalogWork, author: string, tlg: string, ref: strin
       if (!current()) return;
       mergeCtx(ctx, fresh.morph, fresh.gloss);
       tallyLemmas(ctx, batch); // grow the work-view frequency signal
-      renderUnits(body, batch, ctx, kind, rendered);
+      // Chapter dividers: split the batch into same-chapter runs so a
+      // boundary renders a kicker wherever it falls (page start or mid-page).
+      // Chapters are rebuilt here (not reused from menu state) so page 1 is
+      // already correct before the background scan finishes.
+      chapters = buildChapters();
+      const chEligible = chapters.length >= 3 && totalPages() >= 3;
+      const labelByStart = new Map(chapters.map((c) => [c.start, c.label]));
+      const before = body.childElementCount;
+      let off = 0;
+      while (off < batch.length) {
+        let end = off + 1;
+        while (end < batch.length && batch[end].chapter === batch[off].chapter) end++;
+        const ch = batch[off].chapter;
+        const isFirst = rendered === 0 && off === 0;
+        const prevCh = off === 0
+          ? (rendered > 0 ? units[rendered - 1].chapter : undefined)
+          : batch[off - 1].chapter;
+        if (!isFirst && ch && ch !== prevCh && chEligible && (chCounts.get(ch) ?? 0) >= 4) {
+          body.appendChild(chapterDivider(
+            labelByStart.get(rendered + off) ?? ch));
+        }
+        renderUnits(body, batch.slice(off, end), ctx, kind, rendered + off);
+        off = end;
+      }
       rendered += batch.length;
-      pageRows.push(batch.length);
+      pageRows.push({ children: body.childElementCount - before, units: batch.length });
+      rebuildChapters();
       savePosition(batch[0].domRef);
       if (translationWanted) void refreshTranslation();
     } catch (error) {
@@ -216,10 +362,10 @@ async function reader(work: CatalogWork, author: string, tlg: string, ref: strin
   };
   /** Remove the last rendered page from screen (data stays cached for re-entry). */
   const popPage = (): void => {
-    const rows = pageRows.pop();
-    if (!rows) return;
-    for (let i = 0; i < rows; i++) body.lastElementChild?.remove();
-    rendered -= rows;
+    const page = pageRows.pop();
+    if (!page) return;
+    for (let i = 0; i < page.children; i++) body.lastElementChild?.remove();
+    rendered -= page.units;
     if (translationWanted) void refreshTranslation();
   };
   /** Page turning: delta ±1 steps or a jump to an absolute page number. */
@@ -230,7 +376,10 @@ async function reader(work: CatalogWork, author: string, tlg: string, ref: strin
     busy = true; status.replaceChildren(); paintPager();
     try {
       if (delta > 0) {
-        while (pageRows.length < target && !atEnd && current()) await loadNextPage();
+        while (pageRows.length < target && !atEnd && current()) {
+          await loadNextPage();
+          paintPager(); // progress feedback on long multi-page jumps
+        }
       } else {
         while (pageRows.length > target && pageRows.length > 1) popPage();
       }
@@ -271,10 +420,21 @@ async function reader(work: CatalogWork, author: string, tlg: string, ref: strin
   const onScroll = () => {
     clearTimeout(saveTimer);
     saveTimer = window.setTimeout(() => {
+      if (!current()) return;
       const toolbarBottom = controls.root.getBoundingClientRect().bottom;
       const row = Array.from(body.querySelectorAll<HTMLElement>("[data-ref]"))
         .find((item) => item.getBoundingClientRect().bottom > Math.max(0, toolbarBottom));
       savePosition(row?.dataset.ref);
+      // Keep the chapter menu honest about reading position.
+      const idx = Number(row?.dataset.idx);
+      if (!chSel.hidden && Number.isInteger(idx)) {
+        let v = "";
+        for (const c of chapters) {
+          if (c.start <= idx) v = String(c.start);
+          else break;
+        }
+        if (v && chSel.querySelector(`option[value="${v}"]`)) chSel.value = v;
+      }
     }, 500);
   };
   window.addEventListener("scroll", onScroll, { passive: true });
@@ -287,6 +447,8 @@ async function reader(work: CatalogWork, author: string, tlg: string, ref: strin
   await loadNextPage();
   if (!current()) return;
   paintPager();
+  rebuildChapters();
+  void scanChapters(); // complete the chapter menu quietly in the background
   // resume: honor an explicit ?ref= deep link by paging forward to it.
   // A bogus ref falls back to page 1 with an explanatory note.
   if (ref) {
