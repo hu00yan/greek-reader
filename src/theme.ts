@@ -2,13 +2,14 @@
 // Choice persists in localStorage ("greek-reader.theme"); applied via
 // [data-theme] on <html> so only colors change — no layout shift.
 
+import { storage } from "./storage";
 export type ThemeChoice = "auto" | "light" | "dark";
 const KEY = "greek-reader.theme";
 
 const mq = window.matchMedia("(prefers-color-scheme: dark)");
 
 function choice(): ThemeChoice {
-  const v = localStorage.getItem(KEY);
+  const v = storage.getItem(KEY);
   return v === "light" || v === "dark" ? v : "auto";
 }
 
@@ -20,7 +21,7 @@ function apply(): void {
 }
 
 export function setTheme(c: ThemeChoice): void {
-  localStorage.setItem(KEY, c);
+  storage.setItem(KEY, c);
   apply();
 }
 

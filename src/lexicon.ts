@@ -7,6 +7,7 @@
 // converted via fromBeta before lookup; raw input is always tried too.
 // Keyboard: Enter focuses first result; ArrowUp/Down navigate; Esc closes.
 import { fromBeta } from "./betacode";
+import { attachDrawerResize } from "./drawer-resize";
 import { fetchJSON, loadCatalog, loadMorph, loadGloss, stripAccents,
   type Gloss, type Parse } from "./api";
 
@@ -179,6 +180,7 @@ function ensureDrawer(): El {
     }
   });
   document.body.appendChild(drawer);
+  attachDrawerResize(drawer, "left");
   return drawer;
 }
 

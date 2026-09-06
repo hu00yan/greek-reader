@@ -22,8 +22,13 @@
 //   S6 Responses carry Access-Control-Allow-Origin:* , explicit Content-Type,
 //      and X-Robots-Tag: noindex — scoped to this route only.
 
+import { readLimited, limitedStream } from "../lib/limits";
+
 interface Env {
   LLM_RELAY_ALLOW_INSECURE?: string;
+  /** Exact HTTPS origins, never wildcard/user-controlled DNS. */
+  LLM_RELAY_ALLOWED_ORIGINS?: string;
+  LLM_RELAY_DISABLED?: string;
 }
 interface Ctx {
   request: Request;
@@ -38,10 +43,10 @@ const DEFAULT_MAX_TOKENS = 1024;
 const PROTOCOLS = new Set(["openai", "anthropic", "responses"]);
 
 const CORS_HEADERS: Record<string, string> = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type",
-  "Access-Control-Max-Age": "86400",
+  "Cache-Control": "no-store",
+  "X-Content-Type-Options": "nosniff",
+  "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
+  "Referrer-Policy": "no-referrer",
 };
 
 const json = (body: unknown, status = 200): Response =>
@@ -56,7 +61,7 @@ const json = (body: unknown, status = 200): Response =>
 
 /** Preflight for browsers sending OPTIONS before POSTing JSON. */
 export async function onRequestOptions(): Promise<Response> {
-  return new Response(null, { status: 204, headers: CORS_HEADERS });
+  return new Response(null, { status: 405, headers: { ...CORS_HEADERS, Allow: "POST" } });
 }
 
 /* ---------------- S2: private-network denylist ---------------- */
@@ -149,14 +154,14 @@ function buildUpstreamBody(
     .join("\n\n");
   const convo = messages.filter((m) => m.role !== "system");
   if (protocol === "anthropic") {
-    const BUDGET: Record<string, number> = {
+  const BUDGET: Record<string, number> = {
       low: 2048, medium: 8192, high: 16384,
     };
     return {
       model,
-      max_tokens: typeof maxTokens === "number" && maxTokens > 0
-        ? Math.floor(maxTokens)
-        : DEFAULT_MAX_TOKENS, // REQUIRED by Anthropic API
+      max_tokens: Math.max(eff ? BUDGET[eff] + 1024 : 0,
+        typeof maxTokens === "number" && maxTokens > 0
+          ? Math.min(32768, Math.floor(maxTokens)) : DEFAULT_MAX_TOKENS),
       ...(system ? { system } : {}),
       messages: convo,
       stream: false,
@@ -205,12 +210,23 @@ function cappedStream(src: ReadableStream<Uint8Array>): ReadableStream<Uint8Arra
 /* ---------------- main handler ---------------- */
 
 export async function onRequestPost(ctx: Ctx): Promise<Response> {
-  const insecureTest = ctx.env?.LLM_RELAY_ALLOW_INSECURE === "1";
+  if (ctx.env?.LLM_RELAY_DISABLED === "1") return json({ error: { message: "AI relay disabled" } }, 503);
+  const requestUrl = new URL(ctx.request.url);
+  const originHeader = ctx.request.headers.get("origin");
+  if ((originHeader && originHeader !== requestUrl.origin) || ctx.request.headers.get("sec-fetch-site") === "cross-site") {
+    return json({ error: { message: "Cross-origin relay requests are not allowed" } }, 403);
+  }
+  if (!/^application\/json(?:\s*;|$)/i.test(ctx.request.headers.get("content-type") ?? "")) {
+    return json({ error: { message: "Content-Type must be application/json" } }, 415);
+  }
+  const insecureTest = ctx.env?.LLM_RELAY_ALLOW_INSECURE === "1" &&
+    ["localhost", "127.0.0.1", "[::1]"].includes(requestUrl.hostname);
 
   let rawText = "";
   try {
-    rawText = await ctx.request.text();
-  } catch {
+    rawText = await readLimited(ctx.request, MAX_REQ_BYTES);
+  } catch (error) {
+    if (error instanceof RangeError) return json({ error: { message: "request body exceeds 64KiB cap" } }, 413);
     return json({ error: { message: "could not read request body" } }, 400);
   }
   // S4 request-size cap
@@ -272,6 +288,21 @@ export async function onRequestPost(ctx: Ctx): Promise<Response> {
       403,
     );
   }
+  const base = new URL(baseUrl);
+  if (base.username || base.password || base.search || base.hash || (base.port && base.port !== "443" && !insecureTest)) {
+    return json({ error: { message: "baseUrl must not contain credentials, query, fragment or a non-HTTPS port" } }, 400);
+  }
+  const allowed = new Set((ctx.env?.LLM_RELAY_ALLOWED_ORIGINS ??
+    "https://api.openai.com,https://api.anthropic.com,https://openrouter.ai,https://api.deepseek.com,https://api.experientiallabs.ai")
+    .split(",").map((value) => value.trim()).filter(Boolean));
+  if (!insecureTest && !allowed.has(base.origin)) {
+    return json({ error: { message: "Provider origin not enabled by this deployment. Ask the operator to configure LLM_RELAY_ALLOWED_ORIGINS." } }, 403);
+  }
+  // Keyless local providers (Ollama/LM Studio) exist; only allow the empty
+  // key on the local-dev insecure path, never in production.
+  if ((!apiKey.trim() && !insecureTest) || apiKey.length > 4096 || /[\r\n]/.test(apiKey)) {
+    return json({ error: { message: "A valid provider API key is required" } }, 400);
+  }
 
   if (!model) {
     return json({ error: { message: "model is required" } }, 400);
@@ -281,7 +312,7 @@ export async function onRequestPost(ctx: Ctx): Promise<Response> {
     messages.length > 0 &&
     messages.every((m) =>
       m !== null && typeof m === "object" &&
-      typeof (m as Record<string, unknown>).role === "string" &&
+      ["system", "user", "assistant"].includes(String((m as Record<string, unknown>).role)) &&
       typeof (m as Record<string, unknown>).content === "string" &&
       ((m as Record<string, unknown>).content as string).length > 0
     );
@@ -319,21 +350,26 @@ export async function onRequestPost(ctx: Ctx): Promise<Response> {
           : `could not reach upstream: ${e instanceof Error ? e.message : String(e)}`;
     return json({ error: { message: msg } }, 502);
   }
-  clearTimeout(timer);
-
   // S6: verbatim status/body, our own safe header set
   const outHeaders: Record<string, string> = {
     "X-Robots-Tag": "noindex",
     ...CORS_HEADERS,
   };
   const ct = upstream.headers.get("Content-Type");
-  outHeaders["Content-Type"] = ct ?? (stream ? "text/event-stream" : "application/json");
+  if (!/^(application\/json|text\/event-stream)(?:\s*;|$)/i.test(ct ?? "")) {
+    controller.abort(); clearTimeout(timer);
+    return json({ error: { message: "Upstream returned an unsupported content type" } }, 502);
+  }
+  outHeaders["Content-Type"] = ct!;
 
   if (!upstream.body) {
+    clearTimeout(timer);
     return new Response(null, { status: upstream.status, headers: outHeaders });
   }
   try {
-    return new Response(cappedStream(upstream.body), {
+    return new Response(limitedStream(upstream.body, MAX_RESP_BYTES, () => {
+      clearTimeout(timer); controller.abort();
+    }), {
       status: upstream.status,
       headers: outHeaders,
     });

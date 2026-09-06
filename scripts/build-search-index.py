@@ -57,10 +57,11 @@ def snippets(text: str):
 def build(capped: bool) -> dict:
     catalog = json.load(open(os.path.join(DATA, "catalog.json"),
                              encoding="utf-8"))
-    order: dict[str, int] = {}
+    file_work: dict[str, str] = {}
     for a in catalog["authors"]:
         for w in a["works"]:
-            order[w["id"]] = len(order)
+            for file in w.get("translation", {}).get("files", []):
+                file_work[os.path.basename(file)] = f'{a["tlg"]}--{w["id"]}'
     tdir = os.path.join(DATA, "trans")
     works: list[str] = []
     entries: list[list] = []
@@ -68,10 +69,12 @@ def build(capped: bool) -> dict:
     for name in sorted(os.listdir(tdir)):
         if not name.endswith(".json"):
             continue
-        wid = name[:-5]
-        idx = order.get(wid)
-        if idx is None:
+        wid = file_work.get(name)
+        if wid is None:
             continue
+        if wid not in works:
+            works.append(wid)
+        idx = works.index(wid)
         doc = json.load(open(os.path.join(tdir, name), encoding="utf-8"))
         n = 0
         for u in doc.get("units", []):
@@ -88,8 +91,6 @@ def build(capped: bool) -> dict:
                 entries.append([idx, ref, ns])
                 since_keep[wid] = 0
                 n += 1
-        if n:
-            works.append(wid)
     return {"v": 1, "w": works, "e": entries}
 
 

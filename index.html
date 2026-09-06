@@ -4,13 +4,15 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Greek Reader</title>
-    <meta name="theme-color" content="#0e4a6b" />
+    <meta name="description" content="Read Ancient Greek with word-aligned morphology, dictionary glosses and English translations. Explore Homer, Plato and the classical corpus." />
+    <meta name="theme-color" content="#faf9f7" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
   </head>
   <body>
-    <div id="app"></div>
+    <a class="skip-link" href="#app">Skip to reading</a>
+    <main id="app" tabindex="-1"></main>
+    <noscript>Greek Reader needs JavaScript to load texts and their word-by-word analyses.</noscript>
     <script type="module" src="/src/main.ts"></script>
-    <script>if('serviceWorker' in navigator)addEventListener('load',()=>navigator.serviceWorker.register('/sw.js'))</script>
   </body>
 </html>

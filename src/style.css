@@ -15,7 +15,7 @@
   --font-read: 'Gentium Plus', 'GFS Didot', Georgia, 'Times New Roman', serif;
   --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --ui-size: 1rem;
-  --greek-size: 1.35rem;
+  --greek-size: 1.5rem;
 
   /* layout */
   --drawer-width: 24rem;
@@ -128,8 +128,8 @@ html, body {
 }
 
 #app {
-  max-width: min(75vw, 1400px);
-  width: min(75vw, 1400px);
+  max-width: 1200px;
+  width: calc(100% - 48px);
   margin: 0 auto;
   padding: 32px 20px 72px;
   transition: margin-left 0.25s ease, margin-right 0.25s ease;
@@ -376,6 +376,12 @@ input:focus, textarea:focus, select:focus {
   color: var(--greek-ink);
 }
 
+.reader-title { font-family: var(--font-read); font-size: 1.75rem; margin-bottom: 12px; }
+.reader-guide { max-width: 78ch; font-size: 0.85rem; color: var(--muted); margin: 0 0 32px; }
+.reader-error:not(:empty) { padding: 12px; border-left: 3px solid var(--accent); background: var(--surface-2); }
+.reader-body > div > .line, .reader-body > div > .unit { padding-bottom: 24px; border-bottom: 1px solid var(--border); }
+.skip-link { position: fixed; top: -100px; left: 16px; z-index: 100; background: var(--surface); padding: 12px; }
+.skip-link:focus { top: 8px; }
 .w { cursor: pointer; border-radius: 4px; transition: background-color 0.1s ease; }
 .w:hover { background: var(--word-hover); }
 .w.active { background: var(--word-active); }
@@ -617,7 +623,7 @@ body.hide-gloss .gloss { display: none; }
   border-left: 1px solid var(--border);
   box-shadow: var(--shadow-drawer-r);
   padding: 16px;
-  z-index: 20;
+  z-index: 40;
 }
 .side-panel.hidden { display: none; }
 .side-panel h2 {
@@ -916,7 +922,7 @@ textarea {
 .ai-modal-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 30;
+  z-index: 80;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1133,10 +1139,16 @@ body.show-prosody .scansion {
   body.lexicon-open.translation-open #app {
     margin-left: auto;
     margin-right: auto;
-    max-width: min(75vw, 1400px);
-    width: min(75vw, 1400px);
+    max-width: 100%;
+    width: calc(100% - 24px);
   }
-  :root { --greek-size: 1.2rem; }
+  :root { --greek-size: 1.4rem; }
+  #app { width: calc(100% - 24px); padding: 24px 8px 72px; }
+  .controls { position: static; }
+  .controls button, .unit-actions button { min-height: 36px; }
+  .home-search { flex-wrap: wrap; }
+  .home-search input { flex-basis: 100%; }
+  .drawer, .side-panel { height: 100dvh; }
   .parse-row { column-gap: 12px; }
   .pcol { max-width: min(12rem, 100%); }
   .cand-row .feats { word-break: break-word; }
@@ -1313,7 +1325,7 @@ a.text-hit:focus-visible {
   z-index: 60;
 }
 .modal-card {
-  background: var(--surface-1);
+  background: var(--surface);
   color: var(--text);
   border-radius: var(--radius-l);
   box-shadow: var(--shadow-md);
@@ -1367,7 +1379,7 @@ a.text-hit:focus-visible {
   width: min(320px, calc(100vw - 24px));
   max-height: min(420px, 70vh);
   overflow: auto;
-  background: var(--surface-1);
+  background: var(--surface);
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: var(--radius-l);

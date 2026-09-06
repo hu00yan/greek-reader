@@ -24,12 +24,13 @@ function zhTitleOf(w: unknown): string {
 
 export function renderHome(app: HTMLElement): void {
   app.replaceChildren();
-  app.appendChild(el("h1", undefined, "Greek Reader"));
+  const heading = el("h1", undefined, "Greek Reader");
+  app.appendChild(heading);
+  const current = () => heading.isConnected;
   app.appendChild(
     el("p", "subtitle",
-      "An interlinear reading environment for Ancient Greek — Homer to " +
-      "Plutarch, the New Testament and the Septuagint: morphology by " +
-      "Morpheus, glosses from LSJ, all static JSON."),
+      "Read Ancient Greek, one word at a time. Explore the classical corpus with " +
+      "word-aligned grammar, dictionary glosses and English translations."),
   );
 
   // ---- prominent search box + header controls ----
@@ -105,11 +106,13 @@ export function renderHome(app: HTMLElement): void {
   // ---- catalog ----
   let catalogAuthors: CatalogAuthor[] = [];
   loadCatalog().then((catalog) => {
+    if (!current()) return;
     catalogAuthors = [...catalog.authors].sort((a, b) =>
       a.name.localeCompare(b.name));
     for (const author of catalogAuthors) app.appendChild(authorBlock(author));
     applyFilter();
   }).catch((e: Error) => {
+    if (!current()) return;
     app.appendChild(el("p", "unparsed-note",
       `Could not load catalog.json: ${e.message}`));
   });
@@ -117,8 +120,8 @@ export function renderHome(app: HTMLElement): void {
   /** One author section: heading + its work links. */
   function authorBlock(author: CatalogAuthor): HTMLElement {
     const block = el("section", "author-block");
-    block.dataset.authorName = stripAccents(author.name);
-    const head = el("h2", undefined, author.name);
+    block.dataset.authorName = stripAccents(`${author.name} ${author.nameZh ?? ""}`);
+    const head = el("h2", undefined, author.nameZh ? `${author.nameZh} · ${author.name}` : author.name);
     head.id = author.tlg;
     block.appendChild(head);
     const list = el("div", "work-list");
@@ -225,8 +228,12 @@ export function renderHome(app: HTMLElement): void {
   loadCatalog().then((catalog) => {
     for (const author of catalog.authors) {
       for (const w of author.works) {
-        workTlg.set(w.id, author.tlg);
-        catalogTitles.set(w.id, w.title);
+        workTlg.set(`${author.tlg}--${w.id}`, author.tlg);
+        catalogTitles.set(`${author.tlg}--${w.id}`, w.titleZh || w.title);
+        if (!workTlg.has(w.id)) {
+          workTlg.set(w.id, author.tlg);
+          catalogTitles.set(w.id, w.titleZh || w.title);
+        }
       }
     }
   }).catch(() => {});
@@ -242,15 +249,15 @@ export function renderHome(app: HTMLElement): void {
 
   /** Render up to 8 "In translations:" hits below the catalog matches. */
   async function updateTextHits(q: string): Promise<void> {
+    const token = ++hitsToken;
     const nq = normEn(q);
     if (nq.length <= 3) {
       hits.hidden = true;
       hits.replaceChildren();
       return;
     }
-    const token = ++hitsToken;
     const idx = await ensureIndex();
-    if (token !== hitsToken) return; // stale keystroke
+    if (token !== hitsToken || !current()) return;
     if (!idx) {
       app.appendChild(hits);
       hits.replaceChildren(
@@ -285,7 +292,7 @@ export function renderHome(app: HTMLElement): void {
     for (const f of found) {
       const tlg = workTlg.get(f.wid)!;
       const a = el("a", "text-hit") as HTMLAnchorElement;
-      a.href = `#/${tlg}/${f.wid}`;
+      a.href = `#/${tlg}/${f.wid.replace(/^tlg\d{4}--/, "")}?ref=${encodeURIComponent(f.ref)}`;
       const title = catalogTitles.get(f.wid) ?? f.wid;
       a.appendChild(el("span", "hit-title", title));
       a.appendChild(el("span", "hit-ref", ` ${f.ref}`));
@@ -319,7 +326,7 @@ export function renderHome(app: HTMLElement): void {
   let grcToken = 0;
   const grcHits = el("div", "text-hits grc-hits");
   grcHits.hidden = true;
-  const GRC_RE = /[\u0370-\u03ff\u1f00-\uffff]/;
+  const GRC_RE = /[\u0370-\u03ff\u1f00-\u1fff]/;
   // ascii letters adjacent to betacode diacritic markers (postfix / \ = | : ?
   // or prefix ( ) * capital marker)
   const BETACODE_MARK_RE = /[a-z][/\\=|:?]|[(*][a-z]/i;
@@ -334,6 +341,7 @@ export function renderHome(app: HTMLElement): void {
   }
 
   async function updateGrcHits(rawQ: string): Promise<void> {
+    const token = ++grcToken;
     let q = rawQ.trim();
     if (!q) {
       grcHits.hidden = true;
@@ -352,9 +360,8 @@ export function renderHome(app: HTMLElement): void {
     }
     // stripAccents folds accents AND final sigma (λόγος → λογοσ)
     const nq = stripAccents(q);
-    const token = ++grcToken;
     const idx = await ensureGrcIndex();
-    if (token !== grcToken) return; // stale keystroke
+    if (token !== grcToken || !current()) return;
     if (!idx) {
       app.appendChild(grcHits);
       grcHits.replaceChildren(
@@ -380,12 +387,16 @@ export function renderHome(app: HTMLElement): void {
     grcHits.appendChild(head);
     const list = el("div", "text-hits-list");
     for (const [widIdx, ref] of hit[1].slice(0, shown)) {
-      const wid = idx.w[widIdx];
-      const tlg = workTlg.get(wid);
-      if (!tlg) continue;
+      // The grc index stores work ids only; the TLG comes from the catalog
+      // (first author wins on duplicate slugs — same rule as home links).
+      const wid = typeof idx.w[widIdx] === "string"
+        ? (idx.w[widIdx] as string).replace(/^tlg\d{4}--/, "") : "";
+      const tlg = wid ? workTlg.get(wid) : undefined;
+      if (!wid || !tlg) continue;
       const a = el("a", "text-hit grc-hit") as HTMLAnchorElement;
-      a.href = `#/${tlg}/${wid}`;
-      a.appendChild(el("span", "hit-title", catalogTitles.get(wid) ?? wid));
+      a.href = `#/${tlg}/${wid}?ref=${encodeURIComponent(ref)}`;
+      a.appendChild(el("span", "hit-title",
+        catalogTitles.get(`${tlg}--${wid}`) ?? catalogTitles.get(wid) ?? wid));
       a.appendChild(el("span", "hit-ref",
         ref ? ` — first seen at ${ref}` : ""));
       list.appendChild(a);

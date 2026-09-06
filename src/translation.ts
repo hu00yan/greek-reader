@@ -104,6 +104,17 @@ export interface TranslationView {
 }
 
 let scrollCleanup: (() => void) | null = null;
+let requestVersion = 0;
+
+export function closeTranslation(): void {
+  requestVersion++;
+  scrollCleanup?.();
+  scrollCleanup = null;
+  const panel = document.getElementById("tr-drawer");
+  panel?.classList.add("hidden");
+  document.body.classList.remove("translation-open");
+  document.dispatchEvent(new Event("tr-closed"));
+}
 
 // drawer resizing lives in src/drawer-resize.ts (single shared implementation)
 
@@ -132,9 +143,7 @@ if (!(globalThis as unknown as Record<string, unknown>).__trEscBound) {
     if (e.key === "Escape") {
       const p = document.getElementById("tr-drawer");
       if (p && !p.classList.contains("hidden")) {
-        p.classList.add("hidden");
-        document.body.classList.remove("translation-open");
-        p.dispatchEvent(new CustomEvent("tr-closed", { bubbles: false }));
+        closeTranslation();
       }
     }
   });
@@ -150,9 +159,11 @@ if (!(globalThis as unknown as Record<string, unknown>).__trEscBound) {
     if (t.closest(
       ".controls, .side-panel, .drawer.left, .ai-modal-backdrop, .ai-gear-wrap, .lex-fab",
     )) return;
-    p.classList.add("hidden");
-    document.body.classList.remove("translation-open");
-    p.dispatchEvent(new CustomEvent("tr-closed", { bubbles: false }));
+    // Reading content is not a dismiss action: word/card clicks must keep the
+    // drawer open so translation stays alongside. Genuinely blank areas
+    // (page margins) still dismiss.
+    if (t.closest(".line, .prose-unit")) return;
+    closeTranslation();
   }, true);
 }
 
@@ -173,6 +184,9 @@ export async function openTranslation(
   greekUnits: () => Unit[],
   ctx?: RenderCtx,
 ): Promise<TranslationView | null> {
+  const version = ++requestVersion;
+  scrollCleanup?.();
+  scrollCleanup = null;
   const meta = (work as { translation?: TrMeta }).translation;
   const files = meta?.files ?? [];
   if (!files.length) return null;
@@ -187,9 +201,7 @@ export async function openTranslation(
   panel.replaceChildren();
 
   const hide = (): void => {
-    panel!.classList.add("hidden");
-    document.body.classList.remove("translation-open");
-    panel!.dispatchEvent(new CustomEvent("tr-closed", { bubbles: false }));
+    closeTranslation();
   };
   panel.appendChild(buildHeadbar(`English — ${work.title}`, hide));
 
@@ -203,13 +215,20 @@ export async function openTranslation(
   panel.appendChild(body);
   const note = el("p", "tr-credits", "Loading translation…");
   panel.appendChild(note);
+  panel.classList.remove("hidden");
+  document.body.classList.add("translation-open");
+  attachDrawerResize(panel, "right");
 
   // fetch all translation parts (Greek WorkPart shape or trans {text} shape)
   let trUnits: Unit[] = [];
   try {
     const parts = await Promise.all(
-      files.map((f) => fetchJSON<WorkPart & { units: Array<Unit & { text?: string; w?: string }> }>(`data/${f}`)),
+      files.map((f) => fetchJSON<WorkPart & { alignment?: string; units: Array<Unit & { text?: string; w?: string }> }>(`data/${f}`)),
     );
+    if (version !== requestVersion) return null;
+    if (parts.some((part) => part.alignment === "loose")) {
+      credits.append(" · Approximate alignment — consult the surrounding passage, not as a word-for-word translation.");
+    }
     for (const p of parts) {
       for (const u of p.units as Array<Unit & { text?: string; w?: string }>) {
         // normalize trans shape: {ref,text} or compact {w} -> {words}
@@ -230,8 +249,13 @@ export async function openTranslation(
       ? ""
       : "Translation file has no units.";
   } catch (e) {
+    if (version !== requestVersion) return null;
     note.textContent = `Translation unavailable: ${(e as Error).message}`;
+    const retry = el("button", "", "Retry translation");
+    retry.onclick = () => void openTranslation(work, greekUnits, ctx);
+    note.appendChild(retry);
   }
+  if (version !== requestVersion) return null;
 
   // render English rows; verse aligns by ref, prose by sequence index
   // Speaker coloring: use English speaker names extracted from translation text's
@@ -268,7 +292,6 @@ export async function openTranslation(
     const gu = greek[i];
     let j = -1;
     if (gu.ref) j = trUnits.findIndex((t, k) => t.ref === gu.ref);
-    if (j < 0 && i < trUnits.length) j = i;
     const raw = trUnits[j] as unknown as { _text?: string; words: string[] } | undefined;
     const txt = j >= 0 ? (raw?._text ?? raw?.words.join(" ") ?? "") : "";
     if (englishSpeakerFromText(txt)) highEnglishCount++;
@@ -305,13 +328,13 @@ export async function openTranslation(
     const gu = greek[i];
     let j = -1;
     if (gu.ref) {
-      j = trUnits.findIndex((t, k) => t.ref === gu.ref && !used.has(k));
+      const matches = trUnits.map((t, k) => t.ref === gu.ref ? k : -1).filter((k) => k >= 0);
+      j = matches[gu.occurrence ?? 0] ?? -1;
     }
-    if (j < 0 && i < trUnits.length && !used.has(i)) j = i;
     const row = el("div", "tr-unit");
     const raw = trUnits[j] as unknown as { _text?: string; words: string[] };
     // preserve original casing — no toUpperCase
-    const txt = j >= 0 ? (raw?._text ?? raw?.words.join(" ") ?? "—") : "—";
+    const txt = j >= 0 ? (raw?._text ?? raw?.words.join(" ") ?? "—") : "No aligned translation for this passage.";
     // determine English speaker for coloring: prefer strict extraction from txt, fallback to Greek->English
     // Do not color inline mentions; only very start colon/verb or Greek first token.
     let engLabel: string | null = englishSpeakerFromText(txt);

@@ -2,9 +2,9 @@
 // Imported once from main.ts. All DOM via createElement/textContent.
 
 export function initPWA(): void {
-  if ("serviceWorker" in navigator) {
+  if (import.meta.env.PROD && "serviceWorker" in navigator) {
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("/sw.js").catch(() => {
+      navigator.serviceWorker.register(`${import.meta.env.BASE_URL}sw.js`).catch(() => {
         /* registration failures (e.g. non-secure context) are non-fatal */
       });
     });
@@ -13,7 +13,7 @@ export function initPWA(): void {
   const badge = document.createElement("div");
   badge.id = "offline-badge";
   badge.className = "offline-badge";
-  badge.textContent = "offline — cached";
+  badge.textContent = "Offline — only previously opened texts may be available";
   badge.hidden = true;
   document.body.appendChild(badge);
 

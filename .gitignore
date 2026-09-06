@@ -32,3 +32,6 @@ test-results/
 preview.pid
 *.pid
 .cache-spike/
+
+.cache-verify/
+/data/

@@ -126,6 +126,7 @@ export function importJSON(text: string): { added: number; bad: boolean } {
   let added = 0;
   if (parsed.auto && typeof parsed.auto === "object") {
     for (const [k, v] of Object.entries(parsed.auto)) {
+      if (k === "__proto__" || k === "constructor" || k === "prototype") continue;
       if (!v?.tlg || !v?.workId || !v?.ref) continue;
       if (!d.auto[k]) added += 1;
       d.auto[k] = v;
@@ -157,7 +158,7 @@ export function setUnitContext(
 ): void {
   ctxTlg = tlg;
   ctxWid = wid;
-  if (ref !== undefined) ctxRef = ref;
+  ctxRef = ref ?? null;
 }
 
 /** Track the unit the reader is currently focused on (deep-link target or
@@ -173,10 +174,11 @@ export function getFocusedRef(): string | null {
 /** Per-unit star button for unit-actions; hidden without reader context. */
 export function starButtonFor(ref: string): El | null {
   if (!ctxTlg || !ctxWid || !ref) return null;
+  const tlg = ctxTlg, wid = ctxWid;
   const b = el("button", "star-btn") as HTMLButtonElement;
   b.type = "button";
   const paint = (): void => {
-    const saved = isStarred(ctxTlg!, ctxWid!, ref);
+    const saved = isStarred(tlg, wid, ref);
     b.textContent = saved ? "★" : "☆";
     b.classList.toggle("saved", saved);
     b.title = saved ? "Remove bookmark" : "Bookmark this line";
@@ -186,7 +188,7 @@ export function starButtonFor(ref: string): El | null {
   paint();
   b.addEventListener("click", (e) => {
     e.stopPropagation();
-    toggleStar(ctxTlg!, ctxWid!, ref);
+    toggleStar(tlg, wid, ref);
     paint();
   });
   return b;
@@ -195,6 +197,7 @@ export function starButtonFor(ref: string): El | null {
 /** Per-unit copy-link button: copies a deep link that jumps to this unit. */
 export function copyLinkButtonFor(ref: string): El | null {
   if (!ctxTlg || !ctxWid || !ref) return null;
+  const tlg = ctxTlg, wid = ctxWid;
   const b = el("button", "copy-link-btn") as HTMLButtonElement;
   b.type = "button";
   b.textContent = "⧉";
@@ -204,7 +207,7 @@ export function copyLinkButtonFor(ref: string): El | null {
     e.stopPropagation();
     const url =
       `${location.origin}${location.pathname}` +
-      `#/${ctxTlg}/${ctxWid}?ref=${encodeURIComponent(ref)}`;
+      `#/${tlg}/${wid}?ref=${encodeURIComponent(ref)}`;
     const done = (): void => {
       b.textContent = "✓";
       window.setTimeout(() => {
@@ -257,7 +260,7 @@ export function continueReadingSection(titles: Map<string, string>): El {
   for (const m of recents) {
     const a = el("a", "card cont-card") as HTMLAnchorElement;
     a.href = `#/${m.tlg}/${m.workId}?ref=${encodeURIComponent(m.ref)}`;
-    a.appendChild(el("div", "title", titles.get(m.workId) ?? m.workId));
+    a.appendChild(el("div", "title", titles.get(`${m.tlg}/${m.workId}`) ?? titles.get(m.workId) ?? m.workId));
     a.appendChild(el(
       "div",
       "meta",

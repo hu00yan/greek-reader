@@ -24,12 +24,10 @@ import {
   type PromptContext,
 } from "./llm";
 import { openSettings } from "./settings";
-import { initToolbarExtras } from "./toolbar-extras";
 
 export function initLLM(): void {
   installGear();
   installSweeper();
-  initToolbarExtras();
   // Abort in-flight streams when navigating between routes.
   window.addEventListener("hashchange", () => abortAll());
 }
@@ -55,9 +53,9 @@ function installGear(): void {
       o.value = p.id;
       o.textContent =
         `${p.name} · ${p.model || "(no model)"}${p.id === st.defaultId ? " ★" : ""}`;
-      if (p.id === active.id) sel.value = p.id;
       sel.appendChild(o);
     }
+    sel.value = active.id;
   };
   refreshSel();
 
@@ -96,6 +94,7 @@ function placeGearInControls(): void {
   if (!wrap) return;
   const bar = document.querySelector(".controls");
   if (bar && !bar.contains(wrap)) bar.appendChild(wrap);
+  if (!bar && wrap.parentElement !== document.body) document.body.appendChild(wrap);
   wrap.classList.toggle("fallback", !bar);
 }
 
@@ -247,11 +246,7 @@ function assertTrusted(ev: Event): void {
 
 /** Greek sentence text of a row, ref labels stripped. */
 function rowSentence(row: HTMLElement): string {
-  const greek = row.querySelector(".greek-line");
-  if (!greek) return "";
-  const clone = greek.cloneNode(true) as HTMLElement;
-  clone.querySelectorAll(".ref-label, .ref-badge").forEach((n) => n.remove());
-  return (clone.textContent ?? "").replace(/\s+/g, " ").trim();
+  return Array.from(row.querySelectorAll(".w"), (word) => word.textContent ?? "").join(" ").trim();
 }
 
 function contextFromPanel(body: HTMLElement): PromptContext {

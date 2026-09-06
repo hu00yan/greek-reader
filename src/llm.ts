@@ -9,6 +9,7 @@
 // leaves the browser except to the endpoint configured, relayed via
 // /api/llm (needed because most providers do not send CORS headers).
 
+import { storage } from "./storage";
 export type Protocol = "openai" | "anthropic" | "responses";
 export type Effort = "" | "low" | "medium" | "high";
 
@@ -27,15 +28,21 @@ export const PROFILES_KEY = "greek-reader.llm.profiles";
 export const MAIN_KEY = "greek-reader.llm";
 const USAGE_KEY = "greek-reader.llm.usage";
 
+/** Experiential gateway (OpenAI Chat Completions compatible) for gpt-6-astra.
+ * Browser profiles store the key in localStorage (paste from EXPLABS_API_KEY);
+ * Node scripts read process.env.EXPLABS_API_KEY directly. Never hardcode the key. */
+export const EXPERIENTIAL_BASE_URL = "https://api.experientiallabs.ai/v1";
+export const EXPERIENTIAL_MODEL = "gpt-6-astra";
+
 export const DEFAULT_BASE_URL: Record<Protocol, string> = {
-  openai: "https://api.openai.com/v1",
+  openai: EXPERIENTIAL_BASE_URL,
   anthropic: "https://api.anthropic.com",
-  responses: "https://api.openai.com/v1",
+  responses: EXPERIENTIAL_BASE_URL,
 };
 export const DEFAULT_MODEL: Record<Protocol, string> = {
-  openai: "gpt-4o-mini",
+  openai: EXPERIENTIAL_MODEL,
   anthropic: "claude-3-5-haiku-latest",
-  responses: "gpt-4o-mini",
+  responses: EXPERIENTIAL_MODEL,
 };
 
 /** Placeholders usable inside the prompt template (see buildPrompt). */
@@ -90,14 +97,15 @@ interface MainStore {
 
 function readMain(): MainStore {
   try {
-    return JSON.parse(localStorage.getItem(MAIN_KEY) ?? "{}") as MainStore;
+    const value: unknown = JSON.parse(storage.getItem(MAIN_KEY) ?? "{}");
+    return value && typeof value === "object" && !Array.isArray(value) ? value as MainStore : {};
   } catch {
     return {};
   }
 }
 
 function writeMain(patch: MainStore): void {
-  localStorage.setItem(MAIN_KEY, JSON.stringify({ ...readMain(), ...patch }));
+  storage.setItem(MAIN_KEY, JSON.stringify({ ...readMain(), ...patch }));
 }
 
 export function loadCaps(): LlmCaps {
@@ -105,11 +113,11 @@ export function loadCaps(): LlmCaps {
   return {
     maxCallsPerHour:
       typeof c.maxCallsPerHour === "number"
-        ? clamp(c.maxCallsPerHour, CAP_LIMITS.minCalls, CAP_LIMITS.maxCalls)
+         && Number.isFinite(c.maxCallsPerHour) ? clamp(c.maxCallsPerHour, CAP_LIMITS.minCalls, CAP_LIMITS.maxCalls)
         : CAP_LIMITS.defaultCalls,
     maxInputChars:
       typeof c.maxInputChars === "number"
-        ? clamp(c.maxInputChars, CAP_LIMITS.minChars, CAP_LIMITS.maxChars)
+         && Number.isFinite(c.maxInputChars) ? clamp(c.maxInputChars, CAP_LIMITS.minChars, CAP_LIMITS.maxChars)
         : CAP_LIMITS.defaultChars,
   };
 }
@@ -192,6 +200,9 @@ function isProfile(p: unknown): boolean {
   return Boolean(
     o && typeof o.id === "string" &&
     typeof o.name === "string" &&
+    (o.baseUrl === undefined || typeof o.baseUrl === "string") &&
+    (o.apiKey === undefined || typeof o.apiKey === "string") &&
+    (o.model === undefined || typeof o.model === "string") &&
     ["openai", "anthropic", "responses"].includes(o.protocol),
   );
 }
@@ -218,7 +229,7 @@ function readLegacyConfig(): { baseUrl?: string; apiKey?: string; model?: string
 }
 
 function persistProfiles(store: ProfileStore): void {
-  localStorage.setItem(PROFILES_KEY, JSON.stringify(store));
+  storage.setItem(PROFILES_KEY, JSON.stringify(store));
   profileCache = store;
 }
 
@@ -264,7 +275,7 @@ export function setActiveProfile(id: string): void {
 /** True when the active profile can actually be used. */
 export function isReady(): boolean {
   const p = getActiveProfile();
-  return Boolean(p.baseUrl && p.model);
+  return Boolean(p.baseUrl && p.model && p.apiKey);
 }
 
 /* ---------------- sanitizer (C3) ---------------- */
@@ -507,6 +518,7 @@ export async function callLLM(
       signal: opts.signal,
     });
   } catch (e) {
+    if (opts.signal?.aborted) throw new DOMException("Cancelled", "AbortError");
     throw new LlmError(
       `request failed: ${e instanceof Error ? e.message : String(e)}`);
   }
@@ -529,10 +541,7 @@ export async function callLLM(
     opts.onDelta?.(text);
     return text;
   }
-  // Unknown/non-JSON shape: surface raw text rather than failing silently.
-  const text = await res.text();
-  opts.onDelta?.(text);
-  return text;
+  throw new LlmError("AI endpoint unavailable or returned invalid JSON. Static hosts do not provide /api/llm.");
 }
 
 /** Parse an OpenAI-style SSE stream, invoking onDelta per content chunk. */

@@ -113,7 +113,7 @@ export function importJSON(text: string): { added: number; bad: boolean } {
   const d = load();
   let added = 0;
   for (const [k, v] of Object.entries(parsed.known as Record<string, VocabEntry>)) {
-    if (!k) continue;
+    if (!k || k === "__proto__" || k === "constructor" || k === "prototype") continue;
     if (!Object.prototype.hasOwnProperty.call(d.known, k)) added += 1;
     d.known[k] = {
       lemma: typeof v?.lemma === "string" ? v.lemma : undefined,

@@ -470,7 +470,7 @@ export function renderUnits(
     const row = el("div", kind === "prose" ? "unit prose-unit" : "line");
     // unique per-work DOM ref (repeated verse chunks get letter suffixes);
     // unit.ref stays verbatim for translation alignment
-    const domRef = unit.ref ? uniqueDomRef(container, unit.ref) : null;
+    const domRef = unit.domRef ?? (unit.ref ? uniqueDomRef(container, unit.ref) : null);
     if (domRef) row.dataset.ref = domRef; // deep-link / resume target
     // Deterministic header: ref + right-aligned grouped actions (TTS + AI)
     const head = el("div", "unit-head");
@@ -521,8 +521,12 @@ export function renderUnits(
     restWords.forEach((w, i) => {
       const parses = ctx.morph.get(stripAccents(w)) ?? [];
       const span = el("span", "w", w);
+      span.tabIndex = 0;
+      span.setAttribute("role", "button");
+      span.setAttribute("aria-label", `Word details: ${w}`);
       span.dataset.stripped = stripAccents(w); // vocab book key
       const col = parseCards(w, ctx);
+      col.lang = "en";
       const many = parses.length > 1;
       span.addEventListener("click", () => {
         // word click: full side panel (all analyses + LSJ) — acceptance
@@ -530,6 +534,13 @@ export function renderUnits(
         // inline candidate list in place.
         openPanel(span, w, ctx);
         if (many) toggleExpanded(w, ctx);
+      });
+      span.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          openPanel(span, w, ctx);
+          if (many) toggleExpanded(w, ctx);
+        }
       });
       // double-click keeps the full side panel too (no-op if already open)
       span.addEventListener("dblclick", () => openPanel(span, w, ctx));
@@ -1026,9 +1037,9 @@ export function renderControls(crumbsText: string, onBack: () => void): Controls
   const spacer = el("span", "spacer");
   bar.appendChild(spacer);
 
-  let showGloss = true;
-  const tog = el("button", undefined, "Hide glosses");
-  tog.setAttribute("aria-pressed", "true");
+  let showGloss = !document.body.classList.contains("hide-gloss");
+  const tog = el("button", undefined, showGloss ? "Hide glosses" : "Show glosses");
+  tog.setAttribute("aria-pressed", String(showGloss));
   tog.addEventListener("click", () => {
     showGloss = !showGloss;
     document.body.classList.toggle("hide-gloss", !showGloss);
@@ -1203,10 +1214,17 @@ function ensurePanel(): El {
 }
 
 export function hidePanel(): void {
+  const focusedInside = !!panel?.contains(document.activeElement);
+  const active = document.querySelector<HTMLElement>(".w.active");
   if (panel) panel.classList.add("hidden");
   document.body.classList.remove("panel-open");
   document.querySelectorAll(".w.active").forEach((n) => n.classList.remove("active"));
+  if (focusedInside && active?.isConnected) active.focus();
 }
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") hidePanel();
+});
 
 function openPanel(span: El, word: string, ctx: RenderCtx): void {
   const p = ensurePanel();
@@ -1217,6 +1235,7 @@ function openPanel(span: El, word: string, ctx: RenderCtx): void {
   span.classList.add("active");
 
   body.appendChild(el("h2", undefined, word));
+  body.querySelector("h2")!.lang = "grc";
   const parses = ctx.morph.get(stripAccents(word)) ?? [];
 
   // vocabulary book: mark/unmark this form (stores stripped key + best lemma)
@@ -1325,4 +1344,5 @@ function openPanel(span: El, word: string, ctx: RenderCtx): void {
 
   p.classList.remove("hidden");
   document.body.classList.add("panel-open"); // squeeze #app so controls stay clickable
+  p.querySelector<HTMLButtonElement>(".close-btn")?.focus();
 }

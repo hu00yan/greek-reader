@@ -116,7 +116,8 @@ export function openSettings(opts: SettingsOptions = {}): void {
 
   const baseUrlHint = pEl(
     "ai-hint",
-    "Examples: https://api.openai.com/v1 · https://openrouter.ai/api/v1 · " +
+    "Examples: https://api.experientiallabs.ai/v1 (gpt-6-astra via EXPLABS_API_KEY) · " +
+    "https://api.openai.com/v1 · https://openrouter.ai/api/v1 · " +
     "https://api.anthropic.com · DeepSeek or a local LM Studio/Ollama URL.",
   );
   fieldsWrap.insertBefore(

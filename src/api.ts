@@ -12,6 +12,8 @@ import { fromBeta, toBeta } from "./betacode";
 export interface CatalogWork {
   id: string;
   title: string;
+  titleZh?: string;
+  translation?: { files: string[]; translator?: string; year?: string | number; license?: string };
   urn: string;
   license: string;
   files: string[];
@@ -19,6 +21,7 @@ export interface CatalogWork {
 }
 export interface CatalogAuthor {
   name: string;
+  nameZh?: string;
   tlg: string;
   works: CatalogWork[];
 }
@@ -30,6 +33,9 @@ export interface Catalog {
 export interface Unit {
   ref: string;
   words: string[];
+  /** Stable display reference and duplicate occurrence, assigned before paging. */
+  domRef?: string;
+  occurrence?: number;
 }
 export interface WorkPart {
   id: string;
@@ -55,7 +61,7 @@ const jsonCache = new Map<string, Promise<unknown>>();
 export function fetchJSON<T>(path: string): Promise<T> {
   let p = jsonCache.get(path);
   if (!p) {
-    p = fetch(path).then((r) => {
+    p = fetch(path, { signal: AbortSignal.timeout(20_000) }).then((r) => {
       if (!r.ok) throw new Error(`${path}: HTTP ${r.status}`);
       return r.json() as Promise<T>;
     });
@@ -132,20 +138,22 @@ async function loadShardMap<K, V>(
     const l = shardLetter(keyOf(k));
     if (l) letters.add(l);
   }
-  await Promise.all(
-    Array.from(letters, (l) =>
-      fetchJSON<Record<string, V>>(`${dir}/${l}.json`).catch(() => null),
-    ),
-  );
+  // One fetch per letter shard; a missing shard degrades to "no data" for its
+  // keys instead of failing the whole lookup (reader must survive holes).
+  const shards = new Map(await Promise.all(Array.from(letters, async (l) =>
+    [l, await fetchJSON<Record<string, V>>(`${dir}/${l}.json`).catch(() => null)] as const,
+  )));
   const out = new Map<string, V>();
   for (const k of keys) {
     const l = shardLetter(keyOf(k));
     if (!l) continue;
-    const shard = (await fetchJSON<Record<string, V> | null>(
-      `${dir}/${l}.json`,
-    ).catch(() => null)) as Record<string, V> | null;
-    const v = shard?.[keyOf(k)];
-    if (v !== undefined) out.set(keyOf(k), v);
+    const shard = shards.get(l);
+    // hasOwnProperty: a lookup key of "__proto__" must not read
+    // Object.prototype out of the shard (would poison the map value).
+    const key = keyOf(k);
+    const v = shard && Object.prototype.hasOwnProperty.call(shard, key)
+      ? (shard as Record<string, V>)[key] : undefined;
+    if (v !== undefined) out.set(key, v);
   }
   return out;
 }
@@ -318,7 +326,9 @@ export async function fetchLiveParse(word: string): Promise<Parse[]> {
   const beta = toBeta(word);
   const res = await fetch(
     `/api/morph?lang=grc&word=${encodeURIComponent(beta)}`,
+    { signal: AbortSignal.timeout(22_000) },
   );
+  if (res.status === 400) return []; // unanalysable word shape, not an outage
   if (!res.ok) throw new Error(`live service HTTP ${res.status}`);
   // Static hosts fall back to index.html with HTTP 200 — treat as absent.
   const type = res.headers.get("content-type") ?? "";
