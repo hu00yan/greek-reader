@@ -216,25 +216,59 @@ test.describe('Ion chapter fixes', () => {
     expect(lastPageUnits[0].words.length).toBeGreaterThan(0);
   });
 
-  test('Toolbar deduplication: exactly 3 controls Expand/Collapse/Hide', async ({ page }) => {
+  test('Toolbar: one stateful Expand/Collapse toggle + one gloss toggle', async ({ page }) => {
     await page.goto(`/${ION_HASH}`);
     await page.waitForSelector('.controls', { timeout: 15000 });
     await page.waitForTimeout(600); // allow toolbar-extras to attempt attach
     const btnTexts = await page.$$eval('.controls button', els => els.map(e => (e.textContent || '').trim()));
-    // Filter for our target labels
-    const expandCount = btnTexts.filter(t => t === 'Expand all' || t === 'Expand all analyses').length;
+    // Expand/Collapse is ONE button whose label tracks the state, so exactly
+    // one of the two labels may be present — never both, never neither.
+    const expandCount = btnTexts.filter(t => t === 'Expand all').length;
     const collapseCount = btnTexts.filter(t => t === 'Collapse all').length;
+    expect(expandCount + collapseCount).toBe(1);
+    // Gloss toggle is separate and self-labelling.
     const hideCount = btnTexts.filter(t => /Hide gloss/i.test(t)).length;
-    // Deduplicated expectation: 1 Expand all, 1 Collapse all, 1 Hide glosses
-    expect(expandCount).toBe(1);
-    expect(collapseCount).toBe(1);
-    expect(hideCount).toBe(1);
-    // Total relevant toolbar count should be 3 for those
-    const relevant = btnTexts.filter(t => ['Expand all', 'Expand all analyses', 'Collapse all', 'Hide glosses', 'Hide gloss', 'Show glosses'].includes(t));
-    expect(relevant.length).toBe(3);
-    // Ensure no duplicate "Expand all findings" etc.
+    const showCount = btnTexts.filter(t => /Show gloss/i.test(t)).length;
+    expect(hideCount + showCount).toBe(1);
+    // No duplicate "Expand all findings" etc.
     const hasFindings = btnTexts.some(t => /findings/i.test(t));
     expect(hasFindings).toBeFalsy();
+  });
+
+  test('Expand toggle reflects and drives expansion state', async ({ page }) => {
+    await page.goto(`/${ION_HASH}`);
+    // Parse cards live in a sibling .parse-row, not under .greek-line.
+    await page.waitForSelector('.parse-row .pcard', { timeout: 20000 });
+    await page.waitForTimeout(600);
+    const read = () => page.evaluate(() => {
+      const bar = document.querySelector('.controls')!;
+      const btn = Array.from(bar.querySelectorAll('button'))
+        .find(b => /^(Expand|Collapse) all$/.test((b.textContent || '').trim()))!;
+      return {
+        label: (btn.textContent || '').trim(),
+        pressed: btn.getAttribute('aria-pressed'),
+        on: btn.classList.contains('is-on'),
+        rows: document.querySelectorAll('.cand-row').length,
+        chips: document.querySelectorAll('.more-chip').length,
+      };
+    });
+    const before = await read();
+    expect(before.label).toBe('Expand all');
+    expect(before.pressed).toBe('false');
+    await page.getByRole('button', { name: /^Expand all$/ }).click();
+    await page.waitForTimeout(700);
+    const during = await read();
+    expect(during.label).toBe('Collapse all');
+    expect(during.pressed).toBe('true');
+    expect(during.on).toBe(true);
+    expect(during.chips).toBe(0);
+    // The E key must drive the same button, not a hidden second control.
+    await page.keyboard.press('e');
+    await page.waitForTimeout(700);
+    const after = await read();
+    expect(after.label).toBe('Expand all');
+    expect(after.pressed).toBe('false');
+    expect(after.rows).toBe(before.rows);
   });
 
   test('Reflow: every visual Greek line has parse row beneath', async ({ page }) => {

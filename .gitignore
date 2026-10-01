@@ -2,6 +2,7 @@ node_modules/
 dist/
 .cache-lsj/
 .cache-corpus/
+__pycache__/
 .cache-src/
 *.log
 .DS_Store

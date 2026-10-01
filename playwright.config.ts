@@ -23,7 +23,16 @@ export default defineConfig({
   projects: [
     {
       name: 'chromium',
-      use: { ...devices['Desktop Chrome'] },
+      use: {
+        ...devices['Desktop Chrome'],
+        // Playwright 1.49 pins chromium-1148, which is not in this machine's
+        // ms-playwright cache (1187/1243 are). Fall back to an installed
+        // build so the suite runs without a fresh `playwright install`.
+        launchOptions: {
+          executablePath: process.env.CHROME_PATH
+            || `${process.env.HOME}/Library/Caches/ms-playwright/chromium-1187/chrome-mac/Chromium.app/Contents/MacOS/Chromium`,
+        },
+      },
     },
   ],
 });

@@ -54,7 +54,11 @@ export interface Parse {
 }
 export interface Gloss {
   u: string; // headword (Unicode)
-  g: string; // LSJ gloss
+  g: string; // first English sense — the short one shown under every word
+  /** Further English senses, most common next. Absent for single-sense
+   *  entries. The pipeline strips LSJ citation markup, so every string
+   *  here is display-ready English. */
+  s?: string[];
 }
 
 const jsonCache = new Map<string, Promise<unknown>>();
@@ -166,10 +170,30 @@ export async function loadMorph(forms: string[]): Promise<Map<string, Parse[]>> 
   return loadShardMap<never, Parse[]>(stripped, "data/morph", (s) => s);
 }
 
-/** Dictionary entries for lemma headwords, keyed by accent-stripped lemma. */
+/** Dictionary entries for lemma headwords, keyed by accent-stripped lemma.
+ *
+ *  A numbered homonym (λέγω1) falls back to its bare headword (λέγω) when the
+ *  dictionary has no entry under the numbered form. The returned map is keyed
+ *  by whatever was asked for, so a caller looking up "λέγω1" still finds the
+ *  entry — without this the card shows a blank gloss. */
 export async function loadGloss(lemmas: string[]): Promise<Map<string, Gloss>> {
   const stripped = Array.from(new Set(lemmas.map(stripAccents)));
-  return loadShardMap<never, Gloss>(stripped, "data/gloss", (s) => s);
+  let found = await loadShardMap<never, Gloss>(stripped, "data/gloss", (s) => s);
+  const missing = stripped.filter((k) => !found.has(k));
+  if (!missing.length) return found;
+  // Second pass: ask for the un-numbered form of each miss.
+  const fallback = await loadShardMap<never, Gloss>(
+    missing.map((k) => k.replace(/\d+$/, "")), "data/gloss", (s) => s,
+  );
+  // Re-key onto the numbered keys that asked for them, so callers looking up
+  // "λέγω1" find the entry filed under "λέγω".
+  for (const orig of missing) {
+    const bare = orig.replace(/\d+$/, "");
+    if (bare === orig) continue;
+    const v = fallback.get(bare);
+    if (v) found.set(orig, v);
+  }
+  return found;
 }
 
 /* ---------------- live analysis (optional Pages Function) ---------------- */

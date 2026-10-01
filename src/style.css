@@ -494,6 +494,46 @@ input:focus, textarea:focus, select:focus {
   min-width: 0;
 }
 
+/* toolbar toggle that is currently ON (expand-all, scansion, …). Without a
+   visible state a toggle reads as a button that did nothing. */
+.controls button.is-on,
+.controls button[aria-pressed="true"] {
+  background: var(--warm-bg);
+  border-color: var(--warm-border);
+  color: var(--warm);
+  font-weight: 600;
+}
+
+/* A speaker label that occupies a unit by itself (Aeschylus sets the Watchman
+   alone, then his speech begins on the next line). Without this the bare name
+   reads as a stray unparsed word. */
+.speaker-role {
+  font-family: var(--font-ui, system-ui, sans-serif);
+  font-size: 0.68em;
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+  color: var(--muted);
+  opacity: 0.75;
+  margin-left: 0.4em;
+  white-space: nowrap;
+}
+.speaker-role::before { content: "("; }
+.speaker-role::after { content: ")"; }
+
+/* marks which word-class a same-lemma row is: an infinitive and a
+   participle of one verb are different words spelled alike */
+.morph-class {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 4px;
+  border: 1px solid var(--warm-border);
+  background: var(--warm-bg);
+  color: var(--warm);
+  white-space: nowrap;
+}
+
 /* tiny feature-disagreement badges, e.g. [acc] [sg] vs [dat] [pl] */
 .diff-badge {
   font-family: var(--font-mono);
@@ -518,8 +558,16 @@ input:focus, textarea:focus, select:focus {
   font-family: var(--font-mono);
   font-size: 0.72rem;
 }
-.gloss { color: var(--muted); }
+.gloss { color: var(--text); }
 .noparse { color: var(--faint); }
+
+/* further senses of the same lemma: present but secondary, so the first
+   sense still reads as THE answer */
+.gloss-more { color: var(--muted); font-size: 0.94em; }
+.gloss-more::before { content: "· "; }
+/* lemma with no dictionary entry: keeps the card height stable without
+   leaving a blank line the reader mistakes for a rendering bug */
+.gloss-missing { min-height: 0; }
 
 body.hide-gloss .gloss { display: none; }
 

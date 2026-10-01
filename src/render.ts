@@ -2,6 +2,12 @@
 // with per-word parse cards, controls bar, and the click-for-details panel.
 import { loadCatalog, loadGloss, loadMorph, stripAccents,
   type Catalog, type Gloss, type Parse, type Unit } from "./api";
+import {
+  diffTokens, lemmaCount, mergeFeatures, morphClass, splitByMorphClass,
+  MORPH_CLASS_LABEL,
+} from "./parse-merge";
+export { diffTokens, lemmaCount, mergeFeatures };
+export type { Gloss };
 import { applyClasses, attachChip, isKnown, markKnown, toolbarControls, unmarkKnown } from "./vocab";
 import { copyLinkButtonFor, openStarPanel, starButtonFor } from "./bookmarks";
 import { fetchHomerEntries, HOMER_DICTS, isHomerActive, openLexicon,
@@ -142,18 +148,6 @@ export function tallyLemmas(ctx: RenderCtx, units: Unit[]): void {
   }
 }
 
-/**
- * Feature tokens of candidate idx that vary within its same-lemma group,
- * e.g. ["acc"] vs ["dat"] — the disagreement made scannable.
- */
-export function diffTokens(fs: string[], idx: number): string[] {
-  if (fs.length < 2) return [];
-  const sets = fs.map((f) => new Set((f ?? "").split(/\s+/).filter(Boolean)));
-  return Array.from(sets[idx]).filter((t) =>
-    !sets.every((s) => s.has(t)),
-  );
-}
-
 /* expansion state persists per word-form while one work view is on screen.
  * All columns of the same form expand/collapse together: a live registry
  * keeps every rendered column in sync with the set (common words like
@@ -174,6 +168,9 @@ function resetExpansion(container: El): void {
 /** Re-render every live parse column against the expansion set. */
 function rerenderAll(): void {
   if (!currentCtx) return;
+  // Stale columns are dropped here rather than at registration: by the time
+  // a re-render happens, a disconnected column is genuinely gone.
+  pruneCols();
   for (const arr of colsByForm.values()) {
     for (const entry of arr) {
       if (entry.col.isConnected) fillParseCol(entry.col, entry.word, currentCtx);
@@ -181,15 +178,33 @@ function rerenderAll(): void {
   }
 }
 
-/** Expand every multi-candidate word in the current view. */
+/** True when any word in the current view is showing all its candidates. */
+export function isAnyExpanded(): boolean {
+  return expandedForms.size > 0;
+}
+
+/** Notified whenever expand/collapse-all changes state, so the toolbar
+ *  button can repaint itself (it can also be driven by the E key). */
+let expansionListeners: Array<() => void> = [];
+export function onExpansionChange(fn: () => void): void {
+  expansionListeners.push(fn);
+}
+function notifyExpansion(): void {
+  for (const fn of expansionListeners) fn();
+}
+
+/** Expand every word that has more than one candidate LEMMA in the view. */
 export function expandAll(): void {
   if (!currentCtx || !expandedView?.isConnected) return;
-  for (const [key, arr] of colsByForm) {
-    const entry = arr.find((e) => e.col.isConnected);
-    if (!entry) continue;
-    if ((currentCtx.morph.get(key)?.length ?? 0) > 1) expandedForms.add(key);
+  // Prune first: this runs long after the render pass, so isConnected now
+  // means "still on the page" and stale entries can be dropped safely.
+  pruneCols();
+  for (const [key] of colsByForm) {
+    const parses = currentCtx.morph.get(key) ?? [];
+    if (lemmaCount(parses) > 1) expandedForms.add(key);
   }
   rerenderAll();
+  notifyExpansion();
 }
 
 /** Collapse everything back to best-parse cards. */
@@ -197,6 +212,7 @@ export function collapseAll(): void {
   if (!expandedForms.size) return;
   expandedForms.clear();
   rerenderAll();
+  notifyExpansion();
 }
 
 /** Keyboard shortcut: E toggles all candidates in the current view. */
@@ -216,14 +232,24 @@ document.addEventListener("keydown", onGlobalKey);
 function registerCol(key: string, col: El, word: string, ctx: RenderCtx): void {
   let arr = colsByForm.get(key);
   if (!arr) colsByForm.set(key, (arr = []));
-  const entry = { col, word };
-  arr.push(entry);
-  // drop dead entries lazily when their column left the document
-  if (arr.length > 64) {
-    colsByForm.set(
-      key,
-      arr.filter((e) => e.col.isConnected),
-    );
+  arr.push({ col, word });
+  // No pruning here. parseCards() runs BEFORE the column is appended, so a
+  // column registered during this render pass is not connected yet — a prune
+  // based on isConnected would discard live columns. A very common word (καὶ
+  // occurs 228x on one page) lost columns that way, and Expand all left them
+  // collapsed while the toolbar said "Collapse all". pruneCols() runs at
+  // re-render time, when every live column is connected and isConnected is
+  // finally a valid test for "left the document".
+}
+
+/** Drop registry entries whose column left the document.
+ *  Only safe once the current render pass has finished, i.e. from
+ *  rerenderAll() — never during registration. */
+function pruneCols(): void {
+  for (const [key, arr] of colsByForm) {
+    const kept = arr.filter((e) => e.col.isConnected);
+    if (!kept.length) colsByForm.delete(key);
+    else if (kept.length !== arr.length) colsByForm.set(key, kept);
   }
 }
 
@@ -248,13 +274,24 @@ export function mergeCtx(
   return ctx;
 }
 
+/** Morpheus numbers homonymous lemmas: λέγω1, δέω2, πλοῦτοσ2. The dictionary
+ *  is keyed by the bare headword, so a numbered lemma gets no entry and the
+ *  card renders an empty gloss — 323 such lemmas exist in the shipped morph
+ *  data and 313 of them resolve once the number is dropped. Ask for both. */
+function glossKeys(lemma: string): string[] {
+  const bare = lemma.replace(/\d+$/, "");
+  return bare && bare !== lemma ? [lemma, bare] : [lemma];
+}
+
 /** Load every analysis + gloss needed for these units (shards cached). */
 export async function prepare(units: Unit[]): Promise<RenderCtx> {
   const forms = units.flatMap((u) => u.words);
   const morph = await loadMorph(forms);
   const lemmas: string[] = [];
   for (const w of new Set(forms)) {
-    for (const p of morph.get(stripAccents(w)) ?? []) lemmas.push(p.l);
+    for (const p of morph.get(stripAccents(w)) ?? []) {
+      lemmas.push(...glossKeys(p.l));
+    }
   }
   const gloss = await loadGloss(lemmas);
   return { morph, gloss };
@@ -283,67 +320,118 @@ function fillParseCol(col: El, word: string, ctx: RenderCtx): void {
   }
 
   const order = rankParses(parses, ctx.lemmaFreq, ctx.genre);
-  if (order.length > 1 && !expandedForms.has(key)) {
-    // collapsed: best-ranked card + muted "+N" chip
-    parseCard(parses[order[0]], ctx, col);
-    const chip = el("button", "more-chip", `+${order.length - 1}`) as HTMLButtonElement;
-    chip.type = "button";
-    chip.title = `${order.length} analyses — click to compare`;
-    chip.setAttribute("aria-label",
-      `${order.length} analyses for ${word}; click to show all`);
-    chip.addEventListener("click", () => toggleExpanded(word, ctx));
-    col.appendChild(chip);
+  // Group by LEMMA first, then split each lemma by MORPH CLASS. Same-class
+  // parses (the gender/number/case variants Morpheus ships) are one word and
+  // merge into a single card; an infinitive and a participle of the same verb
+  // are different words spelled alike and get a row each.
+  const byLemma = new Map<string, Parse[]>();
+  for (const i of order) {
+    const k = stripAccents(parses[i].l);
+    const arr = byLemma.get(k);
+    if (arr) arr.push(parses[i]);
+    else byLemma.set(k, [parses[i]]);
+  }
+  const groups: Parse[][] = [];
+  for (const [, arr] of byLemma) {
+    for (const part of splitByMorphClass(arr)) groups.push(part);
+  }
+  // Keep the best-ranked lemma first so the collapsed card still leads.
+  groups.sort((a, b) =>
+    rankParses(a, ctx.lemmaFreq, ctx.genre)[0] - rankParses(b, ctx.lemmaFreq, ctx.genre)[0]);
+  const lemmaOrder = groups;
+
+  // Collapsed is the DEFAULT for every word, whether or not there is more
+  // than one candidate: it shows the best lemma, its first sense only, and a
+  // "+N" chip when alternatives exist. Keying this on expansion state (not on
+  // lemma count) is what keeps the one-sense-per-word reading view intact —
+  // a word whose four parses are all one lemma must NOT fall through to the
+  // expanded renderer and dump every sense of its dictionary entry.
+  if (!expandedForms.has(key)) {
+    parseCard(lemmaOrder[0], ctx, col);
+    const n = lemmaOrder.length - 1;
+    if (n > 0) {
+      const chip = el("button", "more-chip", `+${n}`) as HTMLButtonElement;
+      chip.type = "button";
+      chip.title = `${lemmaOrder.length} possible analyses — click to compare`;
+      chip.setAttribute("aria-label",
+        `${lemmaOrder.length} possible analyses for ${word}; click to show all`);
+      chip.addEventListener("click", () => toggleExpanded(word, ctx));
+      col.appendChild(chip);
+    }
     return;
   }
 
-  // expanded (or unambiguous): every candidate, clearly separated
-  const groups = new Map<string, Parse[]>();
-  for (const i of order) {
-    const k = stripAccents(parses[i].l);
-    let arr = groups.get(k);
-    if (!arr) groups.set(k, (arr = []));
-    arr.push(parses[i]);
+  // expanded (or unambiguous): one card per analysis, features merged.
+  // The class badge is only worth showing when this column actually splits a
+  // lemma across classes — otherwise every row would carry "inf." noise.
+  const showClass = lemmaOrder.length > new Set(
+    lemmaOrder.map((g) => stripAccents(g[0].l))).size;
+  for (const group of lemmaOrder) {
+    for (const node of candidateRow(group, ctx, showClass)) {
+      col.appendChild(node);
+    }
   }
-  for (const i of order) {
-    candidateRow(parses[i], i, groups.get(stripAccents(parses[i].l))!, ctx)
-      .forEach((node) => col.appendChild(node));
+}
+
+/** Gloss line(s) for a lemma. `full` adds the entry's further senses —
+ *  the collapsed card stays one short line, the expanded row and the side
+ *  panel show the alternatives too. */
+function glossNodes(g: Gloss | undefined, full: boolean): El[] {
+  if (!g) return [];
+  const out = [el("div", "gloss", g.g)];
+  if (full && g.s?.length) {
+    for (const extra of g.s) out.push(el("div", "gloss gloss-more", extra));
   }
+  return out;
 }
 
 /**
- * One expanded candidate: compact summary row — lemma, features,
- * diff badges against same-lemma siblings, gloss.
+ * One expanded candidate: lemma, morph class, merged features, gloss + extra
+ * senses. `group` is every parse of one lemma AND one morph class — gender,
+ * number and case variants merge, an infinitive and a participle do not.
  */
-function candidateRow(
-  p: Parse,
-  idx: number,
-  group: Parse[],
-  ctx: RenderCtx,
-): El[] {
+function candidateRow(group: Parse[], ctx: RenderCtx, showClass = false): El[] {
+  const p = group[0];
   const row = el("div", "pcard cand-row");
   const head = el("div", "cand-head");
   head.appendChild(el("span", "lemma", p.l || "?"));
-  for (const tok of diffTokens(group.map((g) => g.f),
-    group.indexOf(p))) {
-    head.appendChild(el("span", "diff-badge", tok));
+  // When the same lemma appears on another row in a different word class,
+  // name the class so the two rows are not read as a duplicate.
+  if (showClass) {
+    const c = morphClass(p);
+    if (MORPH_CLASS_LABEL[c]) {
+      head.appendChild(el("span", "morph-class", MORPH_CLASS_LABEL[c]));
+    }
+  }
+  // When the group's parses still disagree on a feature, badge the
+  // disagreement so the reader can see what is uncertain.
+  if (group.length > 1) {
+    for (let i = 0; i < group.length; i++) {
+      for (const tok of diffTokens(group.map((g) => g.f), i)) {
+        head.appendChild(el("span", "diff-badge", tok));
+      }
+    }
   }
   row.appendChild(head);
-  const feats = [p.p, p.f, p.x].filter(Boolean).join(" · ");
+  const feats = mergeFeatures(group).join(" · ");
   if (feats) row.appendChild(el("div", "feats", feats));
-  const g = ctx.gloss.get(stripAccents(p.l));
-  if (g) row.appendChild(el("div", "gloss", g.g));
+  row.append(...glossNodes(ctx.gloss.get(stripAccents(p.l)), true));
   return [row];
 }
 
-function parseCard(p: Parse, ctx: RenderCtx, col: El): void {
+function parseCard(group: Parse[], ctx: RenderCtx, col: El): void {
+  const p = group[0];
   const card = el("div", "pcard");
   const head = el("div", "cand-head");
   head.appendChild(el("span", "lemma", p.l || "?"));
   card.appendChild(head);
-  const feats = [p.p, p.f, p.x].filter(Boolean).join(" · ");
-  card.appendChild(el("div", "feats", feats));
-  const g = ctx.gloss.get(stripAccents(p.l));
-  card.appendChild(el("div", "gloss", g ? g.g : ""));
+  const feats = mergeFeatures(group).join(" · ");
+  if (feats) card.appendChild(el("div", "feats", feats));
+  const nodes = glossNodes(ctx.gloss.get(stripAccents(p.l)), false);
+  // Always emit the node so the hide-gloss toggle and the card height stay
+  // predictable; only the text is conditional.
+  if (nodes.length) card.append(...nodes);
+  else card.appendChild(el("div", "gloss gloss-missing", ""));
   col.appendChild(card);
 }
 
@@ -517,6 +605,13 @@ export function renderUnits(
         greek.appendChild(label);
         if (idx < speakerWords.length - 1) greek.appendChild(document.createTextNode(" "));
       });
+      // In editions that set a speaker on its OWN unit — Aeschylus' Agamemnon
+      // opens with the bare "Φύλαξ" and the first line of his speech as the
+      // next unit — the label sits alone above the text with no parse card
+      // under it, so it reads as a stray word. Name it out loud.
+      if (speakerWords.length && !restWords.length) {
+        greek.appendChild(el("span", "speaker-role", "— speaker"));
+      }
       if (restWords.length) greek.appendChild(document.createTextNode(" "));
     }
 
@@ -529,7 +624,9 @@ export function renderUnits(
       span.dataset.stripped = stripAccents(w); // vocab book key
       const col = parseCards(w, ctx);
       col.lang = "en";
-      const many = parses.length > 1;
+      // Expand on click only when the LEMMAS differ — a word with four
+      // gender-split parses of one lemma has nothing to compare.
+      const many = lemmaCount(parses) > 1;
       span.addEventListener("click", () => {
         // word click: full side panel (all analyses + LSJ) — acceptance
         // behaviour — and, when several candidates exist, also expand the
@@ -713,6 +810,47 @@ export const SPEAKER_LEMMAS = new Set<string>([
   // NT / LXX frequent actors
   "ιησους", "πετρος", "παυλος", "ιωαννησ", "μωυσησ", "πιλατος",
   "ηρως", "δαβιδ", "αβρααμ",
+  // ---- Aeschylus, Agamemnon -------------------------------------------
+  // Curated from the shipped text rather than from memory: of the 42
+  // capitalised tokens that begin a unit in this edition, only two are
+  // speaker labels. Both occupy a unit ALONE — the Watchman at ref 0, and
+  // Aegisthus at 1407. Every other one (Πριάμου, Τροίαν, Διὸς, Μοῖρ',
+  // Ἀτρέως, Ἄπολλον …) is an ordinary proper noun inside the verse, and
+  // adding those would paint half the play as if it were a name-list.
+  //
+  // The chorus has no label unit in this edition: its lines are spliced
+  // into the verse, so Χορός never appears unit-initial and is not listed.
+  "φυλαξ", "αιγισθοσ", "αιγισθ",
+  // ---- speaker labels found by scanning every dialogue work ------------
+  // Each of these OCCUPIES A UNIT BY ITSELF and is followed by a line of
+  // speech or vocative, which is what distinguishes a speaker label from an
+  // ordinary proper noun that merely happens to start a verse. Judged from
+  // the next line, not from memory — e.g. Δικαιόπολι is followed by
+  // "τίς ἔστι τί με βωστρεῖς" (a question addressed to him), whereas
+  // Κιθαιρὼν is followed by a place-name and Κιθαιρών.
+  "δικαιοπολι",                                     // Acharnians
+  "μετων", "τελεου",                                // Birds
+  "ποσειδον",                                        // Frogs
+  "αγορακριτοσ",                                     // Knights
+  "λυσιστρατη", "ιηιον",                            // Lysistrata
+  "αρτεμισια",                                      // Thesmophoriazusae
+  "ηρακλεισ", "ηρακλεις",                           // Wealth
+  "φερσεφασσα",                                      // Helen
+  "ιππολυτον",                                       // Hippolytus
+  "ορεστα",                                          // Iphigenia in Tauris
+  "φοιβοσ",                                          // Rhesus
+  "φοιβω",                                           // Ion — the iota
+  // subscript keeps this a SEPARATE key from "φοιβοσ" (NFD does not fold
+  // it), so the dative has to be listed in its own right.
+  "αμμωνιαδασ",                                      // Alcestis (chorus)
+  "σαμιοσ",                                          // Cataplus
+  // NOTE, deliberately NOT added — same shape, but the following line is
+  // narration rather than speech:
+  //   Κιθαιρὼν (Mount Cythera), Ἀργείων (the Argives, collectively),
+  //   Μεγαρικά ("the Megarian things"), Ἰήιον (Ionia, a place),
+  //   Δαρειογενὴς (the race of Darius), Εὐριπίδη (Euripides himself),
+  //   Κύκλω (Polyphemus), Ζεὺς (Zeus). Colouring these would paint whole
+  //   scenes as if a person were speaking.
 ]);
 
 /** Works whose editions carry REAL speaker labels (dramatic dialogues).
@@ -1125,23 +1263,42 @@ export function renderControls(crumbsText: string, onBack: () => void): Controls
   let showGloss = !document.body.classList.contains("hide-gloss");
   const tog = el("button", undefined, showGloss ? "Hide glosses" : "Show glosses");
   tog.setAttribute("aria-pressed", String(showGloss));
+  const paintGloss = (): void => {
+    tog.textContent = showGloss ? "Hide glosses" : "Show glosses";
+    tog.setAttribute("aria-pressed", String(showGloss));
+  };
   tog.addEventListener("click", () => {
     showGloss = !showGloss;
     document.body.classList.toggle("hide-gloss", !showGloss);
-    tog.textContent = showGloss ? "Hide glosses" : "Show glosses";
-    tog.setAttribute("aria-pressed", String(showGloss));
+    paintGloss();
   });
   bar.appendChild(tog);
 
-  // expand/collapse all candidate lists (also key: E)
-  const expAll = el("button", undefined, "Expand all");
-  expAll.title = "Show every candidate parse (key: E)";
-  expAll.addEventListener("click", expandAll);
-  const colAll = el("button", undefined, "Collapse all");
-  colAll.title = "Back to best-parse cards (key: E)";
-  colAll.addEventListener("click", collapseAll);
-  bar.appendChild(expAll);
-  bar.appendChild(colAll);
+  // Expand/collapse: ONE stateful button, not two. Two separate buttons can
+  // never show which state you are in, so pressing either looked like a no-op
+  // — pressing "Expand all" twice did nothing, which reads as broken. The
+  // label and aria-pressed track the real state instead.
+  const expToggle = el("button", undefined, "Expand all") as HTMLButtonElement;
+  expToggle.type = "button";
+  expToggle.title = "Show every candidate parse (key: E)";
+  const paintExpand = (): void => {
+    const on = isAnyExpanded();
+    expToggle.textContent = on ? "Collapse all" : "Expand all";
+    expToggle.setAttribute("aria-pressed", String(on));
+    expToggle.classList.toggle("is-on", on);
+    expToggle.title = on
+      ? "Back to the best parse per word (key: E)"
+      : "Show every candidate parse (key: E)";
+  };
+  expToggle.addEventListener("click", () => {
+    if (isAnyExpanded()) collapseAll();
+    else expandAll();
+    paintExpand();
+  });
+  // The E key toggles too, so the button has to follow it.
+  onExpansionChange(paintExpand);
+  paintExpand();
+  bar.appendChild(expToggle);
 
   // vocabulary book: mode toggle group, stats chip, bulk page marking
   bar.appendChild(toolbarControls());
@@ -1351,19 +1508,42 @@ function openPanel(span: El, word: string, ctx: RenderCtx): void {
     body.appendChild(
       el("p", "word-form", `${parses.length} analysis${parses.length > 1 ? "es" : ""}`),
     );
-    const seenLemmas = new Set<string>();
+    // Group by lemma: Morpheus ships one parse per gender/number, so a word
+    // like κοινόν yields four rows that are really one analysis. Merge the
+    // group's features and show it once.
+    const byLemma = new Map<string, Parse[]>();
     for (const parse of parses) {
+      const k = stripAccents(parse.l);
+      const arr = byLemma.get(k);
+      if (arr) arr.push(parse);
+      else byLemma.set(k, [parse]);
+    }
+    // One row per lemma AND morph class: gender/number/case variants of one
+    // word merge, an infinitive and a participle of the same verb do not.
+    const classes: Parse[][] = [];
+    for (const group of byLemma.values()) {
+      for (const part of splitByMorphClass(group)) classes.push(part);
+    }
+    for (const group of classes) {
       const entry = el("div", "entry");
-      entry.appendChild(el("span", "lemma", parse.l || "?"));
-      const feats = [parse.p, parse.f, parse.x].filter(Boolean).join(" · ");
-      const fEl = el("span", "feats", feats);
-      entry.appendChild(fEl);
-      const gl = ctx.gloss.get(stripAccents(parse.l));
+      entry.appendChild(el("span", "lemma", group[0].l || "?"));
+      const cls = morphClass(group[0]);
+      if (cls === "infinitive" || cls === "participle" || cls === "finite") {
+        entry.appendChild(el("span", "morph-class",
+          MORPH_CLASS_LABEL[cls]));
+      }
+      const feats = mergeFeatures(group).join(" · ");
+      if (feats) entry.appendChild(el("span", "feats", feats));
+      const gl = ctx.gloss.get(stripAccents(group[0].l));
       if (gl) {
         entry.appendChild(el("div", "dict-gloss", `${gl.u}: ${gl.g}`));
+        if (gl.s?.length) {
+          for (const extra of gl.s) {
+            entry.appendChild(el("div", "dict-gloss dict-gloss-more", extra));
+          }
+        }
       }
       body.appendChild(entry);
-      seenLemmas.add(stripAccents(parse.l));
     }
   }
 
@@ -1379,6 +1559,11 @@ function openPanel(span: El, word: string, ctx: RenderCtx): void {
       const entry = el("div", "entry");
       entry.appendChild(el("span", "lemma", d.u));
       entry.appendChild(el("div", "dict-gloss", d.g));
+      if (d.s?.length) {
+        for (const extra of d.s) {
+          entry.appendChild(el("div", "dict-gloss dict-gloss-more", extra));
+        }
+      }
       body.appendChild(entry);
     }
   }
