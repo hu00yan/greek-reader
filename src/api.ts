@@ -134,10 +134,14 @@ function firstBetaLetter(stripped: string): string {
   return "";
 }
 
+/** Progress during sharded dictionary fetch: completed/total shard files. */
+export type ShardProgress = (done: number, total: number) => void;
+
 async function loadShardMap<K, V>(
   keys: string[],
   dir: string,
   keyOf: (k: string) => string,
+  onProgress?: ShardProgress,
 ): Promise<Map<string, V>> {
   const letters = new Set<string>();
   for (const k of keys) {
@@ -146,9 +150,19 @@ async function loadShardMap<K, V>(
   }
   // One fetch per letter shard; a missing shard degrades to "no data" for its
   // keys instead of failing the whole lookup (reader must survive holes).
-  const shards = new Map(await Promise.all(Array.from(letters, async (l) =>
-    [l, await fetchJSON<Record<string, V>>(`${dir}/${l}.json`).catch(() => null)] as const,
-  )));
+  const list = Array.from(letters);
+  let done = 0;
+  const shards = new Map(await Promise.all(list.map(async (l) => {
+    try {
+      const v = await fetchJSON<Record<string, V>>(`${dir}/${l}.json`);
+      return [l, v] as const;
+    } catch {
+      return [l, null] as const;
+    } finally {
+      done += 1;
+      onProgress?.(done, list.length);
+    }
+  })));
   const out = new Map<string, V>();
   for (const k of keys) {
     const l = shardLetter(keyOf(k));
@@ -165,9 +179,9 @@ async function loadShardMap<K, V>(
 }
 
 /** Analyses for surface forms, keyed by accent-stripped form. */
-export async function loadMorph(forms: string[]): Promise<Map<string, Parse[]>> {
+export async function loadMorph(forms: string[], onProgress?: ShardProgress): Promise<Map<string, Parse[]>> {
   const stripped = Array.from(new Set(forms.map(stripAccents)));
-  return loadShardMap<never, Parse[]>(stripped, "data/morph", (s) => s);
+  return loadShardMap<never, Parse[]>(stripped, "data/morph", (s) => s, onProgress);
 }
 
 /** Dictionary entries for lemma headwords, keyed by accent-stripped lemma.
@@ -176,9 +190,9 @@ export async function loadMorph(forms: string[]): Promise<Map<string, Parse[]>> 
  *  dictionary has no entry under the numbered form. The returned map is keyed
  *  by whatever was asked for, so a caller looking up "λέγω1" still finds the
  *  entry — without this the card shows a blank gloss. */
-export async function loadGloss(lemmas: string[]): Promise<Map<string, Gloss>> {
+export async function loadGloss(lemmas: string[], onProgress?: ShardProgress): Promise<Map<string, Gloss>> {
   const stripped = Array.from(new Set(lemmas.map(stripAccents)));
-  let found = await loadShardMap<never, Gloss>(stripped, "data/gloss", (s) => s);
+  let found = await loadShardMap<never, Gloss>(stripped, "data/gloss", (s) => s, onProgress);
   const missing = stripped.filter((k) => !found.has(k));
   if (!missing.length) return found;
   // Second pass: ask for the un-numbered form of each miss.

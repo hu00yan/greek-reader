@@ -815,6 +815,26 @@ textarea {
 
 /* ---- reader pagination -------------------------------------------------------- */
 .reader-status { color: var(--muted); font-size: 0.85rem; margin: 20px 0 8px; }
+.reader-status:empty { display: none; }
+/* While analyses load, Greek is already visible; pending cards shimmer
+   instead of reading as broken "—" placeholders. */
+.parses-pending .noparse {
+  display: inline-block;
+  min-width: 3rem;
+  color: transparent;
+  border-radius: var(--radius-s);
+  background: linear-gradient(90deg, var(--surface-2) 25%, var(--border) 50%, var(--surface-2) 75%);
+  background-size: 200% 100%;
+  animation: parse-shimmer 1.2s ease-in-out infinite;
+  user-select: none;
+}
+@keyframes parse-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .parses-pending .noparse { animation: none; color: var(--faint); }
+}
 .load-more {
   display: block;
   margin: 8px auto 32px;

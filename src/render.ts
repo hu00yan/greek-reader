@@ -166,12 +166,13 @@ function resetExpansion(container: El): void {
 }
 
 /** Re-render every live parse column against the expansion set. */
-function rerenderAll(): void {
+function rerenderAll(only?: Set<string>): void {
   if (!currentCtx) return;
   // Stale columns are dropped here rather than at registration: by the time
   // a re-render happens, a disconnected column is genuinely gone.
   pruneCols();
-  for (const arr of colsByForm.values()) {
+  for (const [key, arr] of colsByForm) {
+    if (only && !only.has(key)) continue;
     for (const entry of arr) {
       if (entry.col.isConnected) fillParseCol(entry.col, entry.word, currentCtx);
     }
@@ -283,18 +284,38 @@ function glossKeys(lemma: string): string[] {
   return bare && bare !== lemma ? [lemma, bare] : [lemma];
 }
 
-/** Load every analysis + gloss needed for these units (shards cached). */
-export async function prepare(units: Unit[]): Promise<RenderCtx> {
+/** Load every analysis + gloss needed for these units (shards cached).
+ *  onProgress reports completed/total across the morph pass then the gloss
+ *  pass, so the reader can show "dictionary 3/21" instead of a dead page. */
+export async function prepare(units: Unit[], onProgress?: (done: number, total: number) => void): Promise<RenderCtx> {
   const forms = units.flatMap((u) => u.words);
-  const morph = await loadMorph(forms);
+  let morphTotal = 1;
+  const morph = await loadMorph(forms, (d, t) => {
+    morphTotal = t;
+    onProgress?.(d, t);
+  });
   const lemmas: string[] = [];
   for (const w of new Set(forms)) {
     for (const p of morph.get(stripAccents(w)) ?? []) {
       lemmas.push(...glossKeys(p.l));
     }
   }
-  const gloss = await loadGloss(lemmas);
+  const gloss = await loadGloss(lemmas, (d, t) => onProgress?.(morphTotal + d, morphTotal + t));
   return { morph, gloss };
+}
+
+/** Re-render live parse columns against the current context.
+ *  Pass the just-loaded batch's words to refill only those columns — older
+ *  pages keep their cards and skip a redundant re-render per page turn.
+ *  Also refreshes vocab dimming for the new cards. */
+export function refreshParses(words?: string[]): void {
+  if (!words) {
+    rerenderAll();
+  } else {
+    const keys = new Set(words.map(stripAccents));
+    rerenderAll(keys);
+  }
+  applyClasses();
 }
 
 function parseCards(word: string, ctx: RenderCtx): El {

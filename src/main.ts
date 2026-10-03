@@ -1,7 +1,7 @@
 // Hash routes own their asynchronous work. Only the current route may paint.
 import "./style.css";
 import { loadCatalog, loadPart, type CatalogAuthor, type CatalogWork, type Unit } from "./api";
-import { genreFor, hidePanel, mergeCtx, prepare, renderControls, renderUnits,
+import { genreFor, hidePanel, mergeCtx, prepare, refreshParses, renderControls, renderUnits,
   setProsodyWorkId, tallyLemmas, ensureScansionDOM, alignAllScansions,
   type RenderCtx } from "./render";
 import { createProsodyToggle, loadProsody } from "./prosody";
@@ -324,23 +324,23 @@ async function reader(work: CatalogWork, author: CatalogAuthor, tlg: string, ref
     setFocusedRef(value);
     saveRecent(tlg, work.id, value);
   };
-  /** Render exactly one more page (fetching as needed), appended to the view. */
+  /** Render exactly one more page (fetching as needed), appended to the view.
+   *  Two stages: Greek text paints immediately from the fetched part, then
+   *  the morphology/dictionary shards fill the parse cards in place. The
+   *  shards dwarf the text (~55MB morph + ~10MB gloss for a typical page-1
+   *  letter spread vs <1MB of text), so blocking the first paint on them
+   *  was the white-screen delay. */
   const loadNextPage = async (): Promise<void> => {
+    let batch: Unit[] = [];
     try {
       while (rendered + PAGE_SIZE > units.length && partIndex < work.files.length && current()) {
         await fetchPart();
       }
       if (!current()) return;
-      const batch = units.slice(rendered, rendered + PAGE_SIZE);
+      batch = units.slice(rendered, rendered + PAGE_SIZE);
       if (!batch.length) { atEnd = true; return; }
-      const fresh = await prepare(batch);
-      if (!current()) return;
-      mergeCtx(ctx, fresh.morph, fresh.gloss);
-      tallyLemmas(ctx, batch); // grow the work-view frequency signal
-      // Chapter dividers: split the batch into same-chapter runs so a
-      // boundary renders a kicker wherever it falls (page start or mid-page).
-      // Chapters are rebuilt here (not reused from menu state) so page 1 is
-      // already correct before the background scan finishes.
+      // Stage 1: paint Greek at once with whatever analyses are already
+      // cached (page 1: mostly "—" placeholders). Never awaits the network.
       chapters = buildChapters();
       const chEligible = chapters.length >= 3 && totalPages() >= 3;
       const labelByStart = new Map(chapters.map((c) => [c.start, c.label]));
@@ -365,6 +365,8 @@ async function reader(work: CatalogWork, author: CatalogAuthor, tlg: string, ref
       pageRows.push({ children: body.childElementCount - before, units: batch.length });
       rebuildChapters();
       savePosition(batch[0].domRef);
+      body.classList.add("parses-pending");
+      paintPager();
       if (translationWanted) void refreshTranslation();
     } catch (error) {
       if (!current()) return;
@@ -373,6 +375,43 @@ async function reader(work: CatalogWork, author: CatalogAuthor, tlg: string, ref
       const retry = node("button", "", "Retry page");
       retry.onclick = () => { status.replaceChildren(); void turnPage(1); };
       status.appendChild(retry);
+      return;
+    }
+    // Stage 2: fetch analyses, then fill the cards in place.
+    try {
+      status.textContent = "Loading word analyses…";
+      const fresh = await prepare(batch, (done, total) => {
+        if (current()) status.textContent = `Loading word analyses… ${done}/${total}`;
+      });
+      if (!current()) return;
+      mergeCtx(ctx, fresh.morph, fresh.gloss);
+      tallyLemmas(ctx, batch); // grow the work-view frequency signal
+      refreshParses(batch.flatMap((u) => u.words));
+      if (current()) status.replaceChildren();
+    } catch (error) {
+      if (!current()) return;
+      status.textContent =
+        `Greek text is shown; word analyses failed: ${error instanceof Error ? error.message : String(error)} `;
+      const retry = node("button", "", "Retry analyses");
+      retry.onclick = () => {
+        status.replaceChildren();
+        void (async () => {
+          try {
+            const fresh = await prepare(batch);
+            if (!current()) return;
+            mergeCtx(ctx, fresh.morph, fresh.gloss);
+            tallyLemmas(ctx, batch);
+            refreshParses(batch.flatMap((u) => u.words));
+          } catch (e) {
+            if (current()) status.textContent = `Still failing: ${e instanceof Error ? e.message : String(e)}`;
+          } finally {
+            if (current()) body.classList.remove("parses-pending");
+          }
+        })();
+      };
+      status.appendChild(retry);
+    } finally {
+      if (current()) body.classList.remove("parses-pending");
     }
   };
   /** Remove the last rendered page from screen (data stays cached for re-entry). */
